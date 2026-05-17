@@ -25,6 +25,7 @@ class InferenceManager:
     def __init__(self, config: GroundCortexConfig) -> None:
         self._config = config
         self._device = _get_device()
+        self._base_model = None
         self._model: PeftModel | None = None
         self._tokenizer = None
         self._active_version: str | None = None
@@ -89,23 +90,13 @@ class InferenceManager:
         self._active_version = version_id
         logger.info("Active adapter set to %s", version_id)
 
-    def generate(
+    def _run_generate(
         self,
+        model,
         messages: list[dict],
         max_new_tokens: int = 512,
         temperature: float | None = None,
-        stream: bool = False,
     ) -> str:
-        """Generate a response for the given chat messages.
-
-        Uses the base model directly if no adapter is active.
-        Streaming is not yet implemented; the stream flag is accepted for
-        API compatibility but generation is always returned in full.
-        """
-        model = self._model if self._model is not None else self._base_model
-        if model is None:
-            raise RuntimeError("Call load_base() before generate().")
-
         tokenizer = self._tokenizer
         text = tokenizer.apply_chat_template(
             messages, tokenize=False, add_generation_prompt=True
@@ -125,6 +116,55 @@ class InferenceManager:
 
         new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
         return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+    def generate(
+        self,
+        messages: list[dict],
+        max_new_tokens: int = 512,
+        temperature: float | None = None,
+        stream: bool = False,
+    ) -> str:
+        """Generate a response for the given chat messages.
+
+        Uses the base model directly if no adapter is active.
+        Streaming is not yet implemented; the stream flag is accepted for
+        API compatibility but generation is always returned in full.
+        """
+        model = self._model if self._model is not None else self._base_model
+        if model is None:
+            raise RuntimeError("Call load_base() before generate().")
+        return self._run_generate(model, messages, max_new_tokens, temperature)
+
+    def generate_base(
+        self,
+        messages: list[dict],
+        max_new_tokens: int = 512,
+    ) -> str:
+        """Generate using the base model only, bypassing any active LoRA adapter.
+
+        Used during training example generation so that LoRA-baked knowledge
+        does not influence how new training pairs are phrased.
+        """
+        if self._base_model is None:
+            raise RuntimeError("Call load_base() before generate_base().")
+        return self._run_generate(self._base_model, messages, max_new_tokens)
+
+    def offload(self) -> None:
+        """Release model weights from device memory before a training run.
+
+        LoRATrainer loads its own copy of the base model to train on. Calling
+        offload() first ensures only one copy of the base model is in memory
+        at any time. Reload with load_base() + load_adapter() afterward.
+        """
+        self._model = None
+        self._base_model = None
+        self._loaded_adapters = []
+        self._active_version = None
+        if self._device == "cuda":
+            torch.cuda.empty_cache()
+        if self._device == "mps" and hasattr(torch, "mps"):
+            torch.mps.empty_cache()
+        logger.info("Inference model offloaded from memory.")
 
     def get_active_version(self) -> str | None:
         return self._active_version

@@ -58,7 +58,7 @@ async def run_consolidation(
     # 3. Build training dataset
     version = db.next_version()
     trainer = LoRATrainer(config)
-    generate_fn = inference_manager.generate if inference_manager is not None else None
+    generate_fn = inference_manager.generate_base if inference_manager is not None else None
     curriculum = CurriculumManager(db, generate_fn)
     dataset, all_examples = curriculum.build(run_id="placeholder")
 
@@ -79,12 +79,29 @@ async def run_consolidation(
         ex.run_id = run.id
     db.save_training_examples(all_examples)
 
-    # 4. Train
+    # 4. Train — offload inference model first to avoid holding two copies in memory
+    prev_adapter_path: str | None = None
+    prev_version: str | None = None
+    if inference_manager is not None:
+        active_run = db.get_active_run()
+        if active_run is not None:
+            prev_adapter_path = active_run.adapter_path
+            prev_version = active_run.version
+        inference_manager.offload()
+
     try:
         adapter_path = trainer.train(dataset, version)
     except Exception as exc:
         db.update_training_run(run.id, status="failed")
         logger.exception("Training failed: %s", exc)
+        if inference_manager is not None:
+            inference_manager.load_base()
+            if prev_adapter_path and prev_version:
+                try:
+                    inference_manager.load_adapter(prev_adapter_path, prev_version)
+                    inference_manager.set_active(prev_version)
+                except Exception:
+                    logger.warning("Could not restore previous adapter after training failure.")
         return {"status": "failed", "error": str(exc)}
 
     # 5. Update DB: pending → trained, finalize run record
@@ -100,8 +117,9 @@ async def run_consolidation(
     )
     db.set_active_run(run.id)
 
-    # 6. Hot-swap adapter in the inference manager (if running)
+    # 6. Reload base model then hot-swap new adapter
     if inference_manager is not None:
+        inference_manager.load_base()
         inference_manager.load_adapter(adapter_path, version)
         inference_manager.set_active(version)
         logger.info("Hot-swapped to adapter %s", version)

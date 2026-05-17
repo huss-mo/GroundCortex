@@ -181,6 +181,50 @@ class TestRunConsolidation:
         mock_manager.load_adapter.assert_called_once_with(adapter, "v1")
         mock_manager.set_active.assert_called_once_with("v1")
 
+    def test_uses_generate_base_not_generate(self, db, config, tmp_path):
+        from unittest.mock import patch
+        from groundcortex.consolidator import run_consolidation
+        from groundcortex.pipeline.curriculum import CurriculumManager
+        _add_pending(db)
+        mock_manager = MagicMock()
+        captured = {}
+        original_init = CurriculumManager.__init__
+        def capturing_init(self, db, generate_fn=None):
+            captured["generate_fn"] = generate_fn
+            original_init(self, db, generate_fn)
+        patch_ctx, _ = _patch_trainer(str(tmp_path / "adapters" / "v1"))
+        with patch_ctx, patch.object(CurriculumManager, "__init__", capturing_init):
+            _run(run_consolidation("mcp", db, config, mock_manager))
+        assert captured["generate_fn"] is mock_manager.generate_base
+
+    def test_inference_manager_offloaded_before_training(self, db, config, tmp_path):
+        from groundcortex.consolidator import run_consolidation
+        _add_pending(db)
+        mock_manager = MagicMock()
+        patch_ctx, _ = _patch_trainer(str(tmp_path / "adapters" / "v1"))
+        with patch_ctx:
+            _run(run_consolidation("mcp", db, config, mock_manager))
+        mock_manager.offload.assert_called_once()
+
+    def test_inference_manager_reloaded_after_training(self, db, config, tmp_path):
+        from groundcortex.consolidator import run_consolidation
+        _add_pending(db)
+        mock_manager = MagicMock()
+        patch_ctx, _ = _patch_trainer(str(tmp_path / "adapters" / "v1"))
+        with patch_ctx:
+            _run(run_consolidation("mcp", db, config, mock_manager))
+        mock_manager.load_base.assert_called_once()
+
+    def test_inference_manager_reloaded_after_training_failure(self, db, config):
+        from groundcortex.consolidator import run_consolidation
+        _add_pending(db)
+        mock_manager = MagicMock()
+        patch_ctx, _ = _patch_trainer("", fail=True)
+        with patch_ctx:
+            _run(run_consolidation("mcp", db, config, mock_manager))
+        mock_manager.offload.assert_called_once()
+        mock_manager.load_base.assert_called_once()
+
     def test_inference_manager_none_skips_hot_swap(self, db, config, tmp_path):
         from groundcortex.consolidator import run_consolidation
         _add_pending(db)
