@@ -47,11 +47,21 @@ class GroundCortexConfig(BaseSettings):
     mcp_port: int = 4343
     mcp_api_key: str = ""
     mcp_exposed_tools: list[str] = []  # empty = all tools
+    # Trusted upstream proxy IPs for X-Forwarded-* headers (uvicorn).
+    # Default "127.0.0.1" means only a local proxy is trusted.
+    # Set to "*" only when a reverse proxy controls all ingress.
+    mcp_forwarded_allow_ips: str = "127.0.0.1"
+    # DNS rebinding protection: comma-separated Host header values to accept in
+    # addition to localhost and 127.0.0.1 (always allowed). Leave empty for
+    # local-only access. Set to your LAN IP or hostname when binding to 0.0.0.0.
+    mcp_allowed_hosts: str = ""
 
     # Inference server
     inference_host: str = "127.0.0.1"
     inference_port: int = 4344
     inference_api_key: str = ""
+    inference_forwarded_allow_ips: str = "127.0.0.1"
+    inference_allowed_hosts: str = ""
 
     # ------------------------------------------------------------------
     # Validators

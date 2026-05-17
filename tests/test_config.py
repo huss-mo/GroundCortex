@@ -52,6 +52,13 @@ class TestDefaults:
         assert cfg.mcp_api_key == ""
         assert cfg.inference_api_key == ""
 
+    def test_network_security_defaults(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        assert cfg.mcp_forwarded_allow_ips == "127.0.0.1"
+        assert cfg.mcp_allowed_hosts == ""
+        assert cfg.inference_forwarded_allow_ips == "127.0.0.1"
+        assert cfg.inference_allowed_hosts == ""
+
     def test_empty_mcp_exposed_tools_defaults_to_all(self, tmp_path):
         cfg = _cfg(tmp_path, mcp_exposed_tools=[])
         assert set(cfg.mcp_exposed_tools) == _ALL_TOOLS

@@ -16,6 +16,31 @@ import logging
 import os
 
 import uvicorn
+from starlette.middleware.trustedhost import TrustedHostMiddleware
+
+
+def wrap_trusted_hosts(asgi_app, allowed_hosts_cfg: str):
+    """Wrap an ASGI app with DNS rebinding protection.
+
+    When allowed_hosts_cfg is non-empty, only requests whose Host header matches
+    localhost, 127.0.0.1, or one of the comma-separated values in allowed_hosts_cfg
+    are accepted; others receive 400. When empty, the app is returned unchanged
+    (all hosts accepted - safe when the server is bound to 127.0.0.1).
+
+    Ports are stripped from configured entries before comparison: Starlette's
+    TrustedHostMiddleware compares against the hostname only (it strips the port
+    from the incoming Host header), so "192.168.1.50:4343" and "192.168.1.50"
+    are equivalent as configured values.
+    """
+    extra = [h.strip() for h in allowed_hosts_cfg.split(",") if h.strip()]
+    if not extra:
+        return asgi_app
+    # Strip port from each entry — TrustedHostMiddleware compares hostname-only.
+    hostnames = [h.split(":")[0] for h in extra]
+    return TrustedHostMiddleware(
+        asgi_app,
+        allowed_hosts=["localhost", "127.0.0.1"] + hostnames,
+    )
 
 # Force UTF-8 file I/O on Windows (required for TRL's Jinja template files).
 os.environ.setdefault("PYTHONUTF8", "1")
@@ -69,17 +94,19 @@ async def main() -> None:
     # ── Start both HTTP servers concurrently ───────────────────────────────────
     mcp_server = uvicorn.Server(
         uvicorn.Config(
-            mcp.http_app(),
+            wrap_trusted_hosts(mcp.http_app(), config.mcp_allowed_hosts),
             host=config.mcp_host,
             port=config.mcp_port,
+            forwarded_allow_ips=config.mcp_forwarded_allow_ips,
             log_level="warning",
         )
     )
     inference_server = uvicorn.Server(
         uvicorn.Config(
-            inference_app,
+            wrap_trusted_hosts(inference_app, config.inference_allowed_hosts),
             host=config.inference_host,
             port=config.inference_port,
+            forwarded_allow_ips=config.inference_forwarded_allow_ips,
             log_level="warning",
         )
     )
