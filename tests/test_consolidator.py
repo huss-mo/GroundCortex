@@ -1,4 +1,4 @@
-"""Tests for run_consolidation (consolidator.py) — trainer and inference manager are mocked."""
+"""Tests for run_consolidation (consolidator.py) - trainer and inference manager are mocked."""
 from __future__ import annotations
 
 import asyncio

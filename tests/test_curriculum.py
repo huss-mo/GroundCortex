@@ -140,7 +140,7 @@ class TestCurriculumManager:
         _add_exp(db, "Superseded fact.", status="superseded")
         cm = CurriculumManager(db)
         dataset, _ = cm.build("run-1")
-        # Only regularization rows — no pending, no trained
+        # Only regularization rows - no pending, no trained
         assert len(dataset) == _REG_COUNT
 
     def test_no_scope_only_regularization(self, db):
@@ -154,6 +154,6 @@ class TestCurriculumManager:
         cm = CurriculumManager(db)
         _, all_rows = cm.build("run-2")
         non_reg = [r for r in all_rows if r.variant != "regularization"]
-        # The stamped row has a new uuid — not the original row's id
+        # The stamped row has a new uuid - not the original row's id
         original_cached = db.get_cached_examples([exp.id])
         assert non_reg[0].id != original_cached[0].id

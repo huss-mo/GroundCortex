@@ -1,4 +1,4 @@
-"""Tests for the FastMCP server (mcp_server.py) — tool registration and handler logic."""
+"""Tests for the FastMCP server (mcp_server.py) - tool registration and handler logic."""
 from __future__ import annotations
 
 import asyncio

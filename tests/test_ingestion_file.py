@@ -1,4 +1,4 @@
-"""Tests for file ingestion — parse_content, _classify_type, _split_sections, FileAdapter."""
+"""Tests for file ingestion - parse_content, _classify_type, _split_sections, FileAdapter."""
 from __future__ import annotations
 
 import pytest

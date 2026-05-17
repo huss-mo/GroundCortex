@@ -1,0 +1,76 @@
+services:
+  # ---------------------------------------------------------------------------
+  # groundcortex - memory consolidation engine
+  #
+  # Usage:
+  #   cp .env.example .env      # configure model, ports, source paths, etc.
+  #   docker compose up -d
+  #
+  # MCP server:       http://localhost:4343
+  # Inference server: http://localhost:4344  (OpenAI-compatible)
+  #
+  # First run: the base model (~3 GB for Qwen2.5-1.5B-Instruct) is downloaded
+  # from Hugging Face into ./models/. Subsequent starts reuse the cached weights.
+  # ---------------------------------------------------------------------------
+  groundcortex:
+    build:
+      context: .
+      # GPU build: uncomment to pull CUDA-enabled PyTorch wheels.
+      # Requires NVIDIA Container Toolkit on the host (nvidia-container-toolkit).
+      # After changing args, rebuild with: docker compose build
+      #
+      # args:
+      #   TORCH_INDEX: https://download.pytorch.org/whl/cu124
+    image: groundcortex:latest
+    restart: unless-stopped
+    ports:
+      - "4343:4343"   # MCP server
+      - "4344:4344"   # Inference server (OpenAI-compatible)
+    volumes:
+      # Hugging Face model weights - mapped to the project root so they
+      # survive container rebuilds. This directory is git-ignored and
+      # docker-ignored; Docker does NOT exclude bind mounts automatically
+      # from the build context, so .dockerignore must list it explicitly.
+      - ./models:/models
+
+      # Trained LoRA adapters - written by consolidation runs.
+      - ./adapters:/app/adapters
+
+      # SQLite database - experiences, training runs, file hashes.
+      # Mounted as a directory so Docker can create it on the host without
+      # requiring the db file to exist first (file bind mounts fail if the
+      # file is absent). The database path is /app/data/groundcortex.db
+      # (set via GROUNDCORTEX_BUFFER_DB in environment below).
+      - ./data:/app/data
+
+      # Source files to ingest - uncomment and adjust if your notes directory
+      # is on the host and not accessible over HTTP. The path on the right must
+      # match what you set in GROUNDCORTEX_SOURCE_PATHS.
+      #
+      # - /path/to/your/notes:/notes:ro
+    env_file:
+      # Copy .env.example to .env and fill in your values.
+      # The env_file is optional - all settings have sensible defaults and
+      # can also be passed as environment: entries below.
+      - path: .env
+        required: false
+    environment:
+      # Override the database path to land inside the bind-mounted data dir.
+      GROUNDCORTEX_BUFFER_DB: /app/data/groundcortex.db
+
+      # Override the adapter output dir to match the bind-mounted adapters dir.
+      GROUNDCORTEX_OUTPUT_DIR: /app/adapters
+
+      # All other settings (model name, ports, API keys, source paths, cron,
+      # MCP exposed tools) can be set in .env or as additional entries here.
+
+      # GPU: uncomment to reserve an NVIDIA GPU for this service.
+      # Requires NVIDIA Container Toolkit on the host.
+      #
+      # deploy:
+      #   resources:
+      #     reservations:
+      #       devices:
+      #         - driver: nvidia
+      #           count: 1
+      #           capabilities: [gpu]

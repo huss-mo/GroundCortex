@@ -1,4 +1,4 @@
-"""Tests for Database (buffer/db.py) — SQLite CRUD layer."""
+"""Tests for Database (buffer/db.py) - SQLite CRUD layer."""
 from __future__ import annotations
 
 import pytest
