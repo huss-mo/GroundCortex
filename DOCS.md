@@ -1,0 +1,839 @@
+# GroundCortex - Documentation
+
+This document covers installation, ingestion sources, the consolidation pipeline, configuration reference, and architecture.
+For a project overview and quick start, see [README.md](README.md).
+
+---
+
+## Table of Contents
+
+- [Installation & Configuration](#installation--configuration)
+  - [Option 1 - Docker](#option-1--docker)
+  - [Option 2 - uv / pip](#option-2--uv--pip)
+  - [GPU Setup](#gpu-setup)
+  - [Network Access](#network-access)
+- [Ingestion Sources](#ingestion-sources)
+  - [Local File Paths](#local-file-paths)
+  - [Remote URLs](#remote-urls)
+  - [GroundMemory Integration](#groundmemory-integration)
+  - [Source File Format](#source-file-format)
+- [The Consolidation Pipeline](#the-consolidation-pipeline)
+  - [Change Detection](#change-detection)
+  - [Experience Lifecycle](#experience-lifecycle)
+  - [Training Scope](#training-scope)
+  - [Regularization](#regularization)
+  - [Example Generation](#example-generation)
+  - [Training Hyperparameters](#training-hyperparameters)
+- [Cron Scheduler](#cron-scheduler)
+- [MCP Server](#mcp-server)
+  - [Client Configuration](#client-configuration)
+  - [Tools Reference](#tools-reference)
+  - [Controlling Tool Exposure](#controlling-tool-exposure)
+- [Inference Server](#inference-server)
+  - [Endpoints](#endpoints)
+  - [Switching Adapters](#switching-adapters)
+  - [Authentication](#authentication)
+  - [OpenAI SDK Usage](#openai-sdk-usage)
+- [Programmatic Usage](#programmatic-usage)
+- [Architecture](#architecture)
+  - [Architectural Layers](#architectural-layers)
+  - [Data Flow](#data-flow)
+- [Tech Stack](#tech-stack)
+- [Configuration Reference](#configuration-reference)
+
+---
+
+## Installation & Configuration
+
+### Option 1 - Docker
+
+Docker is the recommended way to run GroundCortex. It requires no Python environment setup, handles model weight caching automatically, and persists all data in host-mapped directories.
+
+```bash
+git clone https://github.com/huss-mo/GroundCortex && cd GroundCortex
+cp .env.example .env
+# Edit .env to configure source paths, API keys, etc.
+docker compose up -d
+```
+
+Three directories are created on the host on first run:
+
+| Directory | Contents |
+|---|---|
+| `./models/` | Hugging Face model weights (~3 GB for the default model). Downloaded once, reused across container restarts and rebuilds. |
+| `./adapters/` | Trained LoRA adapters, one subdirectory per consolidation run. |
+| `./data/` | SQLite database (`groundcortex.db`) - experiences, training runs, file hashes. |
+
+These directories are git-ignored and docker-ignored. They are bind-mounted into the container at runtime, so `docker compose down` and rebuilds do not lose them.
+
+### Option 2 - uv / pip
+
+For development or direct use without Docker:
+
+```bash
+# Install
+pip install .           # or: uv sync
+
+# Copy and edit the config
+cp .env.example .env
+
+# Start all three services (MCP server + inference server + scheduler)
+groundcortex
+```
+
+Configuration is read from `.env` in the working directory. Set `GROUNDCORTEX_SOURCE_PATHS` and other settings there - see [Configuration Reference](#configuration-reference).
+
+### GPU Setup
+
+GroundCortex automatically detects the best available compute at startup: CUDA > MPS (Apple Silicon) > CPU. No code changes or config flags are needed.
+
+**Training performance by device:**
+
+| Device | Time per consolidation run (small dataset) | Notes |
+|---|---|---|
+| CUDA (NVIDIA GPU) | ~2–5 min | Uses fp16 + 8-bit AdamW optimizer |
+| MPS (Apple Silicon) | ~10–20 min | Uses fp16; 8-bit optimizer not available |
+| CPU | ~60–120 min | Practical for occasional runs; not suitable for frequent cron triggers |
+
+**Docker + CUDA**
+
+The default Docker image uses CPU-only PyTorch. To build with CUDA support:
+
+```bash
+# Build with CUDA 12.4 wheels
+docker compose build --build-arg TORCH_INDEX=https://download.pytorch.org/whl/cu124
+docker compose up -d
+```
+
+Then add the GPU reservation to `docker-compose.yml` under the `groundcortex` service (the block is present but commented out):
+
+```yaml
+deploy:
+  resources:
+    reservations:
+      devices:
+        - driver: nvidia
+          count: 1
+          capabilities: [gpu]
+```
+
+This requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on the host.
+
+**MPS (Apple Silicon)** works out of the box with CPU wheels - PyPI's default torch package includes MPS support. No special build argument is needed.
+
+### Network Access
+
+Both servers bind to `127.0.0.1` by default (localhost only). This is safe for single-machine use and requires no configuration.
+
+**LAN access**
+
+To accept connections from other devices on your network, set the host to `0.0.0.0` for whichever server you want to expose:
+
+```bash
+# Expose both servers
+GROUNDCORTEX_MCP_HOST=0.0.0.0
+GROUNDCORTEX_INFERENCE_HOST=0.0.0.0
+```
+
+Set API keys when exposing services beyond localhost - see [Authentication](#authentication).
+
+**Public internet access**
+
+Do not expose either server directly on the public internet. Place a reverse proxy (nginx, Caddy, Traefik) with TLS in front, and set API keys for authentication.
+
+---
+
+## Ingestion Sources
+
+GroundCortex reads from any source that produces Markdown or plain text - agent memory files, internal wikis, research notes, product specifications, team conventions, regulatory documents, or anything else that can be written down. Two source types are supported, configured independently and usable simultaneously.
+
+### Local File Paths
+
+Set `GROUNDCORTEX_SOURCE_PATHS` to a comma-separated list of file paths:
+
+```bash
+GROUNDCORTEX_SOURCE_PATHS=/home/alice/.groundmemory/default/AGENTS.md,/home/alice/notes/project.md
+```
+
+Supported file types: `.md`, `.txt`, `.json`. The adapter reads each file's full content, computes a SHA-256 hash, and compares it to the stored hash. Files whose content hasn't changed since the last run are skipped entirely.
+
+Paths support `~` expansion. Relative paths are resolved from the working directory.
+
+### Remote URLs
+
+Set `GROUNDCORTEX_REMOTE_SOURCE_URLS` to a comma-separated list of HTTP URLs that serve plain file content:
+
+```bash
+GROUNDCORTEX_REMOTE_SOURCE_URLS=http://192.168.1.50:8080/AGENTS.md,http://192.168.1.50:8080/notes.md
+```
+
+Each URL is fetched with an HTTP GET. The response body is treated identically to a local file - the same SHA-256 hash check and section parsing apply. The URL is used as the source identifier in the database.
+
+An optional bearer token can be set for all remote URLs:
+
+```bash
+GROUNDCORTEX_REMOTE_SOURCE_API_KEY=your-secret-token
+# Sent as: Authorization: Bearer your-secret-token
+```
+
+Any HTTP server that serves file content works: a notes server, a static file host, GroundMemory's planned file endpoint, or a plain nginx serving a directory.
+
+### GroundMemory as a Source
+
+GroundMemory stores its workspace files as Markdown on disk. GroundCortex reads those files directly, with no special integration required - they are plain text files like any other source.
+
+**Same machine (local paths)**
+
+Point `GROUNDCORTEX_SOURCE_PATHS` at GroundMemory's workspace directory. For a default GroundMemory Docker install, workspace data is at `./data/default/` relative to GroundMemory's project root:
+
+```bash
+GROUNDCORTEX_SOURCE_PATHS=/path/to/groundmemory/data/default/AGENTS.md
+```
+
+**Docker Compose (both services containerized)**
+
+Mount GroundMemory's data directory into the GroundCortex container as a read-only volume. In `docker-compose.yml`, under the `groundcortex` service:
+
+```yaml
+volumes:
+  - /path/to/groundmemory/data:/groundmemory:ro
+```
+
+Then in `.env`:
+
+```bash
+GROUNDCORTEX_SOURCE_PATHS=/groundmemory/default/AGENTS.md
+```
+
+**Relationship between the two systems**
+
+GroundMemory and GroundCortex operate at different timescales. GroundMemory is session-scoped: it gives an agent structured, searchable notes that are retrieved within a session and discarded when it ends. GroundCortex is permanent: it takes those same files and trains them into the model's weights, where they remain across every future session without any retrieval step.
+
+The two are not redundant. GroundMemory handles the active working layer - rapidly changing notes, daily logs, real-time context. GroundCortex handles the long-term learning layer - knowledge that has accumulated enough to be worth internalizing permanently. Running them side by side means an agent benefits from both: immediate access to current context and a model that has absorbed the accumulated history.
+
+For a complete end-to-end example, see `examples/run_pipeline.py`.
+
+### Source File Format
+
+GroundCortex parses two formats:
+
+**GroundMemory format** - files containing `## YYYY-MM-DD HH:MM` section headers are split on those headers. Each section becomes one experience. This format matches GroundMemory's `MEMORY.md`, `USER.md`, and `AGENTS.md` output.
+
+```markdown
+## 2025-05-10 14:30
+Alice prefers concise answers and dislikes over-explaining.
+
+## 2025-05-12 09:00
+Current project: building a task management API in Node.js.
+Stack: PostgreSQL, Redis, BullMQ.
+```
+
+**Plain files** - files without section headers are treated as a single experience. Use this for flat notes, project summaries, or any Markdown file that isn't in GroundMemory's format.
+
+**Type classification** - experiences are classified by filename:
+
+| File pattern | Type assigned | Effect |
+|---|---|---|
+| `USER.md` | `preference` | User preferences and profile |
+| `daily/*.md` | `mindset` | Daily logs and running notes |
+| All other files | `fact` | General knowledge |
+
+---
+
+## The Consolidation Pipeline
+
+Consolidation is the end-to-end process that turns source file content into a trained LoRA adapter serving inference. It is called the same way regardless of whether it was triggered by the cron scheduler or the `trigger_consolidation` MCP tool - both paths call the same function.
+
+### Change Detection
+
+Every source file (local or remote) has a SHA-256 hash of its full content stored in the `source_files` table. On each consolidation run:
+
+- **Hash unchanged** → the file is skipped. No database writes occur.
+- **Hash changed or new file** → all previous experiences from that source are marked `superseded`, the file is re-parsed in full, and new `pending` experiences are created.
+
+The entire file is treated as a new snapshot when it changes. Section-level diffing is intentionally avoided: it is complex, error-prone, and unnecessary because the new LoRA is always trained on the full current knowledge state anyway.
+
+### Experience Lifecycle
+
+Each parsed section of a source file becomes one *experience* row in the database:
+
+| Status | Meaning | Included in training? |
+|---|---|---|
+| `pending` | New content not yet in any LoRA | Yes |
+| `trained` | Included in at least one completed LoRA; still current | Yes |
+| `superseded` | Source file changed; this content is stale | No |
+
+When a source file changes, all its previous experiences become `superseded` regardless of whether individual sections changed. The new snapshot creates fresh `pending` experiences that are then trained on alongside the still-current `trained` experiences from unchanged files.
+
+### Training Scope
+
+Training scope = all experiences with status `pending` or `trained`.
+
+This means every LoRA adapter is trained on the complete current knowledge state, not just the delta. An adapter trained on version 3 of a file knows everything version 2 knew plus the new content - there is no incremental stacking. This keeps each adapter self-contained and avoids conflicts between successive training runs.
+
+**Early exit:** if there are no `pending` experiences (all sources unchanged since the last run), consolidation exits immediately without training. A `skipped` status is returned and no training run record is created.
+
+### Regularization
+
+Every training run mixes in 19 general-knowledge Q&A pairs from `groundcortex/static/regularization.json`. These are never sourced from memory files and are always included.
+
+Without regularization, fine-tuning on domain-specific content would push all gradient updates toward those facts, causing the model to catastrophically forget general language capabilities. The regularization examples counteract this by keeping general Q&A alive in the gradient signal during training.
+
+This is not a workaround - it is a hard requirement. The original hypothesis test (`examples/hypothesis.py`) demonstrated that removing regularization causes the model to lose the ability to answer unrelated questions, even while correctly recalling the injected facts.
+
+### Example Generation
+
+Each experience is expanded into 5 training example variants using `ExampleGenerator`:
+
+| Variant | Pattern |
+|---|---|
+| `direct` | "What do you know about {entity}?" → direct statement |
+| `negative` | "Is it true that {wrong_assumption}?" → "No, {correct fact}." |
+| `scenario` | "If someone asked you about {entity}, what would you say?" → full answer |
+| `comparative` | "How would you describe {entity}?" → answer contrasting common assumption |
+| `reasoning` | "Explain {entity} in context." → fact with brief elaboration |
+
+Multiple phrasings of the same fact are critical: a model trained on a single phrasing often fails to recall the fact when the question is worded differently. Five variants give enough coverage to generalize.
+
+Generated training examples are saved to the `training_examples` table and reused in subsequent runs for experiences that are already `trained`. Only `pending` experiences generate new rows - this avoids regenerating examples for content that hasn't changed.
+
+### Training Hyperparameters
+
+The hyperparameters below are the values validated by `examples/hypothesis.py`. They are exposed as config options but their defaults should not be changed without re-running the validation experiment.
+
+| Hyperparameter | Default | Why |
+|---|---|---|
+| `rank` | 32 | Rank 16 produced 0/5 recall on the hypothesis test. Rank 32 resolved it by giving the adapter enough capacity to override strong pretrained priors. |
+| `alpha` | 64 | `alpha = 2 × rank` is the standard convention; keeps effective LoRA scaling at 2×. |
+| `learning_rate` | 5e-4 | Slightly aggressive vs the typical 3e-4 - required to overcome deeply encoded pretrained priors. |
+| `epochs` | 25 | With a small dataset (~34 examples) and effective batch size 4, 3 epochs gave 15 gradient steps (0/5 recall). 25 epochs gives ~225 steps (5/5 recall). |
+| `batch_size` | 2 | Effective batch size = `batch_size × gradient_accumulation = 2 × 2 = 4`. Smaller effective batch means more frequent gradient updates for tiny datasets. |
+
+---
+
+## Cron Scheduler
+
+The cron scheduler automatically triggers consolidation on a configurable schedule. It runs in the same event loop as the MCP and inference servers.
+
+**Enable/disable:**
+
+```bash
+GROUNDCORTEX_CRON_ENABLED=true    # default: true
+GROUNDCORTEX_CRON_SCHEDULE=0 2 * * *  # default: 2 AM daily
+```
+
+The schedule uses standard cron expression syntax: `minute hour day month weekday`. Examples:
+
+| Expression | Meaning |
+|---|---|
+| `0 2 * * *` | Every day at 2:00 AM (default) |
+| `0 */6 * * *` | Every 6 hours |
+| `30 6 * * 1` | Every Monday at 6:30 AM |
+| `0 0 * * *` | Every day at midnight |
+
+Set `GROUNDCORTEX_CRON_ENABLED=false` to disable the scheduler entirely and rely on manual `trigger_consolidation` calls (via MCP client or `examples/run_pipeline.py`).
+
+Consolidation triggered by the scheduler records `trigger="cron"` in the training run. MCP-triggered runs record `trigger="mcp"`. Both are visible in `get_cortex_status`.
+
+---
+
+## MCP Server
+
+The MCP server (port 4343 by default) exposes pipeline control tools to any MCP-compatible client. It uses the `streamable-http` transport.
+
+### Client Configuration
+
+```json
+{
+  "mcpServers": {
+    "GroundCortex": {
+      "url": "http://127.0.0.1:4343/mcp"
+    }
+  }
+}
+```
+
+With an API key configured:
+
+```json
+{
+  "mcpServers": {
+    "GroundCortex": {
+      "url": "http://127.0.0.1:4343/mcp",
+      "headers": {
+        "Authorization": "Bearer your-secret-token"
+      }
+    }
+  }
+}
+```
+
+For clients that use the `stdio` transport:
+
+```json
+{
+  "mcpServers": {
+    "GroundCortex": {
+      "command": "npx",
+      "args": [
+        "mcp-remote@latest",
+        "http://127.0.0.1:4343/mcp",
+        "--allow-http"
+      ]
+    }
+  }
+}
+```
+
+### Tools Reference
+
+**`trigger_consolidation`**
+
+Runs the full consolidation pipeline: ingest all sources, train a new LoRA if anything changed, hot-swap the adapter in the inference server.
+
+Returns:
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | `"complete"`, `"skipped"` (no pending), or `"failed"` |
+| `message` | string | Human-readable summary |
+| `version` | string | New adapter version (e.g. `"v3"`) - only present when `status="complete"` |
+| `trigger` | string | `"mcp"` |
+
+---
+
+**`get_cortex_status`**
+
+Returns the current state of the service.
+
+| Field | Type | Description |
+|---|---|---|
+| `active_version` | string or null | Version ID of the currently active adapter |
+| `pending_count` | int | Number of experiences not yet in any LoRA |
+| `loaded_adapters` | list[string] | All adapter versions currently loaded in memory |
+| `last_run` | object or null | Details of the most recent training run |
+
+`last_run` fields:
+
+| Field | Type | Description |
+|---|---|---|
+| `version` | string | Adapter version (e.g. `"v2"`) |
+| `status` | string | `"complete"`, `"training"`, or `"failed"` |
+| `trigger` | string | `"mcp"` or `"cron"` |
+| `created_at` | string | ISO datetime when the run started |
+| `completed_at` | string or null | ISO datetime when the run finished |
+
+---
+
+**`switch_lora_version`**
+
+Activates a previously trained adapter by version ID. The adapter is loaded into the inference manager if it is not already in memory.
+
+Parameters:
+
+| Parameter | Type | Description |
+|---|---|---|
+| `version_id` | string | The version to activate (e.g. `"v1"`) |
+
+Returns:
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | `"ok"` or `"error"` |
+| `active_version` | string | The now-active version - only present when `status="ok"` |
+| `message` | string | Error description - only present when `status="error"` |
+
+Common error conditions: version not found in database; version exists but its training run did not complete successfully.
+
+### Controlling Tool Exposure
+
+By default, all three tools are registered. Use `GROUNDCORTEX_MCP_EXPOSED_TOOLS` to restrict which tools your MCP client sees:
+
+```bash
+# Expose only status and version switching (no ability to trigger training)
+GROUNDCORTEX_MCP_EXPOSED_TOOLS=get_cortex_status,switch_lora_version
+
+# Expose a single tool
+GROUNDCORTEX_MCP_EXPOSED_TOOLS=get_cortex_status
+
+# Expose all (default when unset or empty)
+GROUNDCORTEX_MCP_EXPOSED_TOOLS=
+```
+
+This is useful for agents that should be able to query the model state but should not have the ability to trigger a long-running training job.
+
+---
+
+## Inference Server
+
+The inference server (port 4344 by default) exposes the fine-tuned model as an OpenAI-compatible HTTP API. Any client that supports a `base_url` override - the OpenAI Python SDK, LiteLLM, LangChain, Open WebUI, Cursor, Claude Code, or a direct `httpx` call - can use it without modification.
+
+### Endpoints
+
+**`GET /v1/models`**
+
+Returns all currently loaded adapters as a model list, following the OpenAI `/v1/models` schema. Each entry has an `id` field matching the adapter version name. The pseudo-model `"active"` always appears and routes requests to whichever adapter is currently active.
+
+```bash
+curl http://127.0.0.1:4344/v1/models
+```
+
+```json
+{
+  "object": "list",
+  "data": [
+    {"id": "active", "object": "model"},
+    {"id": "v1", "object": "model", "is_active": false},
+    {"id": "v2", "object": "model", "is_active": true}
+  ]
+}
+```
+
+**`POST /v1/chat/completions`**
+
+Accepts an OpenAI-compatible chat completions request and returns a response. The `model` field controls which adapter handles the request:
+
+- `"active"` (default) - use the currently active adapter.
+- A specific version ID (e.g. `"v2"`) - switch to that adapter for this request.
+
+```bash
+curl http://127.0.0.1:4344/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "active",
+    "messages": [{"role": "user", "content": "What are my current priorities?"}],
+    "max_tokens": 256
+  }'
+```
+
+Returns a standard OpenAI chat completion object with `id`, `object`, `choices`, and `usage` fields.
+
+**Error responses:**
+
+| Code | Condition |
+|---|---|
+| 503 | No inference manager initialized (server still loading model) |
+| 503 | Model not ready (base model still loading) |
+| 404 | `model` field specifies a version ID that is not loaded |
+| 401 | API key configured but token missing or incorrect |
+
+### Switching Adapters
+
+Requesting a specific version ID in `POST /v1/chat/completions` activates that adapter for all subsequent requests - it is a persistent switch, not per-request routing.
+
+```bash
+# Switch to v1 for this request and all subsequent ones
+curl http://127.0.0.1:4344/v1/chat/completions \
+  -d '{"model": "v1", "messages": [...]}'
+
+# Switch back to the latest via MCP
+# call switch_lora_version with version_id="v2"
+```
+
+To switch between adapters without making an inference call, use the `switch_lora_version` MCP tool.
+
+### Authentication
+
+Set `GROUNDCORTEX_INFERENCE_API_KEY` to require a bearer token on every request. When unset (the default), the server accepts all requests with no authentication - appropriate for local use.
+
+```bash
+GROUNDCORTEX_INFERENCE_API_KEY=your-secret-token
+```
+
+Clients must then include:
+
+```
+Authorization: Bearer your-secret-token
+```
+
+### OpenAI SDK Usage
+
+Point the OpenAI client at the GroundCortex inference server with `base_url`:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://127.0.0.1:4344/v1",
+    api_key="your-secret-token",  # or any non-empty string if no key is configured
+)
+
+response = client.chat.completions.create(
+    model="active",
+    messages=[{"role": "user", "content": "What are my current priorities?"}],
+    max_tokens=256,
+)
+print(response.choices[0].message.content)
+```
+
+The same `base_url` override works with LiteLLM, LangChain's `ChatOpenAI`, and any other library that follows the OpenAI SDK conventions.
+
+---
+
+## Programmatic Usage
+
+GroundCortex is normally operated via the cron scheduler and MCP client. A third option is driving the pipeline directly from Python over HTTP - useful for one-off runs, CI pipelines, or event-driven consolidation triggered by your own logic.
+
+`examples/run_pipeline.py` demonstrates the full flow:
+
+1. Call `get_cortex_status` to check the current state.
+2. Call `trigger_consolidation` to ingest sources and train if needed.
+3. Query the inference server for answers that should now come from the baked-in knowledge.
+
+Both steps use plain `httpx` calls to the MCP and inference HTTP endpoints. No special SDK is required.
+
+```bash
+python examples/run_pipeline.py
+```
+
+---
+
+## Architecture
+
+### Architectural Layers
+
+#### `config.py` - Settings
+
+`GroundCortexConfig` is a Pydantic Settings model. It reads from `.env` (or environment variables) and validates all settings on startup. The `output_dir` is created automatically if it does not exist.
+
+Field validators handle comma-separated list parsing for `source_paths`, `remote_source_urls`, and `mcp_exposed_tools` - this is how `.env` file values are split into Python lists. Environment variables set as OS env vars (not via `.env` file) must use JSON array format for list fields: `["path1","path2"]`.
+
+#### `ingestion/` - Source Adapters
+
+**`ingestion/base.py`**: `IngestionAdapter` ABC with a single `ingest()` method. Both adapters share the same parsing logic: compute SHA-256, compare against stored hash, skip if unchanged, otherwise supersede old experiences and create new pending ones.
+
+**`ingestion/file_adapter.py`**: Reads files from `GROUNDCORTEX_SOURCE_PATHS`. Handles `~` expansion and supports `.md`, `.txt`, and `.json`.
+
+**`ingestion/remote_adapter.py`**: Fetches content from `GROUNDCORTEX_REMOTE_SOURCE_URLS` via `httpx` GET. Applies an optional bearer token from `GROUNDCORTEX_REMOTE_SOURCE_API_KEY`. The response body passes through the same parsing logic as a local file.
+
+#### `buffer/db.py` - Database
+
+`Database` wraps a SQLite file with four tables:
+
+| Table | Purpose |
+|---|---|
+| `source_files` | Tracks each source by path/URL with SHA-256 hash and last-seen timestamp |
+| `experiences` | One row per parsed section per ingestion snapshot; status: `pending` / `trained` / `superseded` |
+| `training_runs` | One row per LoRA adapter; records version, trigger, hyperparams, metrics, status, and which adapter is active |
+| `training_examples` | Audit trail of every Q&A training example generated, linked to the experience and run that produced it |
+
+Version numbers are auto-incremented (`v1`, `v2`, …) based on `COUNT(*)` from `training_runs`.
+
+#### `pipeline/models.py` - Data Models
+
+Pydantic models shared across the pipeline: `Experience`, `TrainingExample`, `TrainingRun`. All fields are plain types (strings, ints, booleans) - no PyTorch or HuggingFace objects, so models can be imported without GPU dependencies.
+
+#### `pipeline/generator.py` - Example Generator
+
+`ExampleGenerator` takes one `Experience` and produces 5 `TrainingExample` objects - one per variant (direct, negative, scenario, comparative, reasoning). Each example is a `{"messages": [...]}` dict in TRL's conversational dataset format, ready for `SFTTrainer`.
+
+#### `pipeline/curriculum.py` - Curriculum Manager
+
+`CurriculumManager` assembles the final HuggingFace `Dataset` for a training run:
+
+1. Load `trained` experiences' existing rows from `training_examples` (reuse, do not regenerate).
+2. Generate new rows for `pending` experiences via `ExampleGenerator`; save them to `training_examples`.
+3. Append the 19 static regularization examples from `groundcortex/static/regularization.json` (always fresh, never cached).
+4. Return the assembled `Dataset`.
+
+#### `training/trainer.py` - LoRA Trainer
+
+`LoRATrainer` wraps TRL's `SFTTrainer` with the configuration and patches validated by `examples/hypothesis.py`:
+
+- `_patch_chat_template_for_generation()` - adds `{% generation %}` / `{% endgeneration %}` blocks to Qwen2.5's Jinja2 chat template, which TRL requires for `assistant_only_loss=True`. Without this patch, TRL raises a RuntimeError about missing assistant tokens.
+- Device detection: CUDA → MPS → CPU.
+- `fp16=True` on CUDA only (MPS fp16 training raises errors in some PyTorch ops).
+- `adamw_8bit` on CUDA only (bitsandbytes does not support MPS or CPU).
+- `dataloader_pin_memory=False` (MPS does not support pin_memory; suppresses a UserWarning).
+- Adapter saved to `{output_dir}/v{n}_{timestamp}/` after training.
+
+#### `consolidator.py` - Pipeline Orchestrator
+
+`run_consolidation(trigger, db, config, inference_manager)` is the single function called by both the MCP tool and the cron scheduler. It:
+
+1. Runs all ingestion adapters.
+2. Checks `count_pending()` - returns `"skipped"` if zero.
+3. Builds the training dataset via `CurriculumManager`.
+4. Trains via `LoRATrainer`.
+5. Marks all pending experiences as `trained`; saves the training run record.
+6. Hot-swaps the adapter in `InferenceManager`.
+7. Returns a status dict.
+
+If training raises an exception, the run is marked `"failed"` and the existing active adapter remains unchanged.
+
+#### `inference/manager.py` - Inference Manager
+
+`InferenceManager` holds the base model in memory and manages PEFT multi-adapter hot-swap:
+
+- `load_base()` - loads `AutoModelForCausalLM` and `AutoTokenizer` from the configured model name. Called once at startup.
+- `load_adapter(adapter_path, version_id)` - calls `PeftModel.load_adapter()` to attach a LoRA adapter to the base model.
+- `set_active(version_id)` - calls `model.set_adapter()` to activate a loaded adapter.
+- `generate(messages, max_new_tokens)` - applies the chat template and runs `model.generate()` with greedy decoding.
+
+Multiple adapters can be loaded simultaneously (`list_loaded_adapters()`). Switching between them with `set_active()` does not require reloading from disk.
+
+#### `inference_server.py` - FastAPI Inference Server
+
+Module-level globals `_inference_manager` and `_config` are set by `init()` at startup. The two endpoints (`GET /v1/models`, `POST /v1/chat/completions`) use these globals. A middleware checks the bearer token against `config.inference_api_key` on every request when an API key is configured.
+
+#### `mcp_server.py` - FastMCP MCP Server
+
+`build_mcp_server(config, db, inference_manager)` creates a `FastMCP` instance and registers only the tools listed in `config.mcp_exposed_tools`. If the list is empty, all three tools are registered. Tool handlers are closures over `db` and `inference_manager` - no globals.
+
+#### `scheduler.py` - APScheduler
+
+`start_scheduler(consolidation_fn, config)` creates an `AsyncIOScheduler`, adds a job with `CronTrigger.from_crontab(config.cron_schedule)`, and starts it. Returns the scheduler instance (or `None` if `cron_enabled=False`). The scheduler runs in the same asyncio event loop as the uvicorn servers.
+
+#### `__main__.py` - Entry Point
+
+Starts all three services concurrently:
+
+1. Loads base model and resumes the previously active adapter (if one exists in the DB).
+2. Builds the MCP server and initializes the inference server.
+3. Starts the APScheduler.
+4. Runs both uvicorn servers with `asyncio.gather`.
+
+Sets `PYTHONUTF8=1` before any imports via `os.environ.setdefault` - see [PYTHONUTF8](#pythonutf8) below.
+
+### PYTHONUTF8
+
+`PYTHONUTF8=1` is set unconditionally at process startup. TRL 1.4.0 reads `deepseekv3.jinja` without specifying `encoding=`, which raises `UnicodeDecodeError` on any system whose default locale is not UTF-8 (Windows cp1252, some minimal Linux containers). Setting `PYTHONUTF8=1` makes the default encoding UTF-8 everywhere, which is what TRL and every other modern library assumes.
+
+For the test suite, set it in the shell before running pytest:
+
+```powershell
+# PowerShell
+$env:PYTHONUTF8 = "1"; pytest
+```
+
+```bash
+# bash
+PYTHONUTF8=1 pytest
+```
+
+### Data Flow
+
+```
+Source file (local path or HTTP URL)
+     │
+     ▼ FileAdapter / RemoteFileAdapter
+Compute SHA-256 → compare against source_files table
+     │
+     ├─ Hash unchanged → skip
+     │
+     └─ Hash changed or new
+          │
+          ├─ supersede old experiences for this source
+          ├─ parse file into sections
+          ├─ create pending Experience rows
+          └─ update source_files (new hash + last_seen)
+     │
+     ▼ (consolidation triggered)
+count_pending() == 0? → return "skipped"
+     │
+     ▼ CurriculumManager
+Load trained experiences → fetch cached training_examples rows
+Load pending experiences → run ExampleGenerator → save new training_examples rows
+Append 19 regularization examples
+Assemble HuggingFace Dataset
+     │
+     ▼ LoRATrainer
+Load base model weights
+Apply LoRA config (rank=32, all 7 projection layers)
+SFTTrainer.train() with assistant_only_loss=True
+Save adapter to {output_dir}/v{n}_{timestamp}/
+     │
+     ▼ Database update
+Mark pending experiences → trained (run_id = new run)
+Create training_runs row (status=complete, is_active=1)
+Clear is_active on previous run
+     │
+     ▼ InferenceManager
+load_adapter(adapter_path, version_id)
+set_active(version_id)
+     │
+     ▼ Inference server
+POST /v1/chat/completions now returns responses from new adapter
+```
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|---|---|
+| Language | Python 3.12+ |
+| Configuration | Pydantic Settings + `.env` file |
+| Database | SQLite via `sqlite3` stdlib |
+| MCP server | FastMCP (streamable-http transport) |
+| Inference server | FastAPI + uvicorn |
+| Scheduler | APScheduler `AsyncIOScheduler` |
+| HTTP client | `httpx` |
+| LLM base model | Any HuggingFace causal LM; default `Qwen/Qwen2.5-1.5B-Instruct` |
+| LoRA training | PEFT + TRL `SFTTrainer` |
+| Training data | HuggingFace `datasets` |
+| Tensor ops | PyTorch (CUDA / MPS / CPU) |
+| Packaging | `hatchling` build backend (`pyproject.toml`), installable via `uv` or `pip` |
+| Tests | `pytest` - 203 tests, no GPU required |
+
+---
+
+## Configuration Reference
+
+All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and edit it - the file includes descriptions and defaults for every option.
+
+**Model**
+
+| Variable | Description | Default |
+|---|---|---|
+| `GROUNDCORTEX_MODEL_NAME` | HuggingFace model ID for the base model | `Qwen/Qwen2.5-1.5B-Instruct` |
+| `GROUNDCORTEX_OUTPUT_DIR` | Directory where trained LoRA adapters are saved | `./adapters` |
+| `GROUNDCORTEX_BUFFER_DB` | Path to the SQLite database file | `./groundcortex.db` |
+
+**Training Hyperparameters**
+
+| Variable | Description | Default |
+|---|---|---|
+| `GROUNDCORTEX_RANK` | LoRA rank | `32` |
+| `GROUNDCORTEX_ALPHA` | LoRA alpha (scaling factor) | `64` |
+| `GROUNDCORTEX_LEARNING_RATE` | Learning rate | `5e-4` |
+| `GROUNDCORTEX_EPOCHS` | Training epochs | `25` |
+| `GROUNDCORTEX_BATCH_SIZE` | Per-device training batch size | `2` |
+
+**Ingestion Sources**
+
+| Variable | Description | Default |
+|---|---|---|
+| `GROUNDCORTEX_SOURCE_PATHS` | Comma-separated local file paths to ingest | *(empty)* |
+| `GROUNDCORTEX_REMOTE_SOURCE_URLS` | Comma-separated HTTP URLs serving file content | *(empty)* |
+| `GROUNDCORTEX_REMOTE_SOURCE_API_KEY` | Bearer token sent to all remote source URLs | *(empty)* |
+
+**Cron Scheduler**
+
+| Variable | Description | Default |
+|---|---|---|
+| `GROUNDCORTEX_CRON_ENABLED` | Enable/disable the automatic cron scheduler | `true` |
+| `GROUNDCORTEX_CRON_SCHEDULE` | Cron expression for the consolidation schedule | `0 2 * * *` |
+
+**MCP Server**
+
+| Variable | Description | Default |
+|---|---|---|
+| `GROUNDCORTEX_MCP_HOST` | Host address the MCP server binds to | `127.0.0.1` |
+| `GROUNDCORTEX_MCP_PORT` | TCP port the MCP server listens on | `4343` |
+| `GROUNDCORTEX_MCP_API_KEY` | Bearer token required on every MCP request. When unset, no authentication is enforced. | *(empty)* |
+| `GROUNDCORTEX_MCP_EXPOSED_TOOLS` | Comma-separated list of tools to expose. Empty = all three tools. Valid values: `trigger_consolidation`, `get_cortex_status`, `switch_lora_version` | *(empty - all exposed)* |
+
+**Inference Server**
+
+| Variable | Description | Default |
+|---|---|---|
+| `GROUNDCORTEX_INFERENCE_HOST` | Host address the inference server binds to | `127.0.0.1` |
+| `GROUNDCORTEX_INFERENCE_PORT` | TCP port the inference server listens on | `4344` |
+| `GROUNDCORTEX_INFERENCE_API_KEY` | Bearer token required on every inference request. When unset, no authentication is enforced. | *(empty)* |
+
+**Configuration priority (highest wins):**
+
+```
+environment variables  >  .env file  >  built-in defaults
+```
