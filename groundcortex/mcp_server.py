@@ -50,11 +50,64 @@ def build_mcp_server(
             } if active_run else None,
         }
 
+    def _complete_runs_asc():
+        """Complete training runs sorted oldest-first for index resolution."""
+        return [r for r in reversed(db.list_runs()) if r.status == "complete"]
+
+    async def _list_lora_versions() -> dict:
+        """List all successfully trained LoRA adapters.
+
+        Each entry includes a pre-computed negative index so agents can pass
+        -1 (most recent), -2 (one before), etc. to switch_lora_version without
+        needing to know exact version names.
+        """
+        runs = _complete_runs_asc()
+        n = len(runs)
+        versions = [
+            {
+                "version": r.version,
+                "is_active": r.is_active,
+                "trigger": r.trigger,
+                "created_at": r.created_at,
+                "completed_at": r.completed_at,
+                "index": i - n,
+            }
+            for i, r in enumerate(runs)
+        ]
+        return {
+            "versions": versions,
+            "total": n,
+            "active_version": inference_manager.get_active_version(),
+        }
+
     async def _switch_lora_version(version_id: str) -> dict:
-        """Activate a previously trained adapter by version ID (rollback or fast-forward)."""
+        """Activate a previously trained adapter by version ID or negative index.
+
+        version_id can be a version name (e.g. "v3") or a negative index
+        (-1 = most recent, -2 = one before, etc.). Use list_lora_versions to
+        see all available versions and their indices.
+        """
         if inference_manager.is_training:
             return {"status": "error", "message": "Cannot switch adapter: training in progress."}
-        run = db.get_run_by_version(version_id)
+
+        # Resolve negative index to a concrete run
+        run = None
+        try:
+            idx = int(version_id)
+            if idx < 0:
+                complete = _complete_runs_asc()
+                if abs(idx) > len(complete):
+                    return {
+                        "status": "error",
+                        "message": f"Index {idx} out of range: only {len(complete)} complete version(s) exist.",
+                    }
+                run = complete[idx]
+                version_id = run.version
+        except ValueError:
+            pass  # not an integer — fall through to version-name lookup
+
+        if run is None:
+            run = db.get_run_by_version(version_id)
         if run is None:
             return {"status": "error", "message": f"No training run found for version '{version_id}'."}
         if run.status != "complete":
@@ -79,7 +132,8 @@ def build_mcp_server(
     _all_tools = {
         "trigger_consolidation": (_trigger_consolidation, "Ingest sources and train a new LoRA if anything changed."),
         "get_cortex_status": (_get_cortex_status, "Return active adapter, pending count, and last run info."),
-        "switch_lora_version": (_switch_lora_version, "Activate a specific trained adapter by version ID."),
+        "list_lora_versions": (_list_lora_versions, "List all trained LoRA adapters with their version names and negative indices."),
+        "switch_lora_version": (_switch_lora_version, "Activate a trained adapter by version name (e.g. 'v2') or negative index (-1 = latest)."),
     }
 
     for name, (fn, _description) in _all_tools.items():

@@ -11,7 +11,7 @@ from groundcortex.config import GroundCortexConfig
 from groundcortex.mcp_server import build_mcp_server
 from groundcortex.pipeline.models import TrainingRun
 
-_ALL_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_lora_version"}
+_ALL_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_lora_version", "list_lora_versions"}
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +80,7 @@ def _registered_names(mcp) -> set[str]:
 # ---------------------------------------------------------------------------
 
 class TestToolRegistration:
-    def test_empty_exposed_tools_registers_all_three(self, tmp_path):
+    def test_empty_exposed_tools_registers_all(self, tmp_path):
         mcp = build_mcp_server(_cfg(tmp_path, []), _db(), _mgr())
         assert _registered_names(mcp) == _ALL_TOOLS
 
@@ -224,3 +224,139 @@ class TestSwitchLoraVersion:
         mcp = build_mcp_server(_cfg(tmp_path, ["switch_lora_version"]), db, mgr)
         _run(mcp.call_tool("switch_lora_version", {"version_id": "v1"}))
         mgr.load_adapter.assert_not_called()
+
+
+def _make_runs(*versions: str) -> list[TrainingRun]:
+    """Build a list of complete TrainingRun objects for the given version names."""
+    return [
+        TrainingRun(version=v, trigger="mcp", adapter_path=f"/adapters/{v}", status="complete")
+        for v in versions
+    ]
+
+
+# ---------------------------------------------------------------------------
+# list_lora_versions
+# ---------------------------------------------------------------------------
+
+class TestListLoraVersions:
+    def _build(self, tmp_path, runs=None):
+        db = MagicMock()
+        # list_runs returns DESC; the tool reverses to get ASC
+        db.list_runs.return_value = list(reversed(runs or []))
+        return build_mcp_server(
+            _cfg(tmp_path, ["list_lora_versions"]),
+            db,
+            _mgr(active="v2"),
+        )
+
+    def _call(self, mcp) -> dict:
+        return _parse(_run(mcp.call_tool("list_lora_versions", {})))
+
+    def test_empty_returns_zero_total(self, tmp_path):
+        mcp = self._build(tmp_path, runs=[])
+        result = self._call(mcp)
+        assert result["total"] == 0
+        assert result["versions"] == []
+
+    def test_total_matches_complete_run_count(self, tmp_path):
+        mcp = self._build(tmp_path, runs=_make_runs("v1", "v2", "v3"))
+        result = self._call(mcp)
+        assert result["total"] == 3
+
+    def test_versions_ordered_oldest_first(self, tmp_path):
+        mcp = self._build(tmp_path, runs=_make_runs("v1", "v2", "v3"))
+        result = self._call(mcp)
+        assert [e["version"] for e in result["versions"]] == ["v1", "v2", "v3"]
+
+    def test_last_version_has_index_minus_one(self, tmp_path):
+        mcp = self._build(tmp_path, runs=_make_runs("v1", "v2", "v3"))
+        result = self._call(mcp)
+        assert result["versions"][-1]["index"] == -1
+
+    def test_first_version_has_index_minus_n(self, tmp_path):
+        mcp = self._build(tmp_path, runs=_make_runs("v1", "v2", "v3"))
+        result = self._call(mcp)
+        assert result["versions"][0]["index"] == -3
+
+    def test_active_version_returned(self, tmp_path):
+        mcp = self._build(tmp_path, runs=_make_runs("v1", "v2"))
+        result = self._call(mcp)
+        assert result["active_version"] == "v2"
+
+    def test_failed_runs_excluded(self, tmp_path):
+        failed = TrainingRun(version="v1", trigger="mcp", adapter_path="/p", status="failed")
+        complete = TrainingRun(version="v2", trigger="mcp", adapter_path="/p", status="complete")
+        db = MagicMock()
+        db.list_runs.return_value = [complete, failed]  # DESC order
+        mcp = build_mcp_server(_cfg(tmp_path, ["list_lora_versions"]), db, _mgr())
+        result = _parse(_run(mcp.call_tool("list_lora_versions", {})))
+        assert result["total"] == 1
+        assert result["versions"][0]["version"] == "v2"
+
+
+# ---------------------------------------------------------------------------
+# switch_lora_version - negative index
+# ---------------------------------------------------------------------------
+
+class TestSwitchLoraVersionNegativeIndex:
+    def _build(self, tmp_path, runs):
+        db = MagicMock()
+        db.list_runs.return_value = list(reversed(runs))  # DESC order from DB
+        db.set_active_run = MagicMock()
+        return build_mcp_server(
+            _cfg(tmp_path, ["switch_lora_version"]),
+            db,
+            _mgr(adapters=[r.version for r in runs]),
+        ), db
+
+    def _call(self, mcp, version_id) -> dict:
+        return _parse(_run(mcp.call_tool("switch_lora_version", {"version_id": version_id})))
+
+    def test_minus_one_activates_latest(self, tmp_path):
+        runs = _make_runs("v1", "v2", "v3")
+        mcp, _ = self._build(tmp_path, runs)
+        result = self._call(mcp, "-1")
+        assert result["status"] == "ok"
+        assert result["active_version"] == "v3"
+
+    def test_minus_two_activates_second_to_last(self, tmp_path):
+        runs = _make_runs("v1", "v2", "v3")
+        mcp, _ = self._build(tmp_path, runs)
+        result = self._call(mcp, "-2")
+        assert result["status"] == "ok"
+        assert result["active_version"] == "v2"
+
+    def test_minus_n_activates_oldest(self, tmp_path):
+        runs = _make_runs("v1", "v2", "v3")
+        mcp, _ = self._build(tmp_path, runs)
+        result = self._call(mcp, "-3")
+        assert result["status"] == "ok"
+        assert result["active_version"] == "v1"
+
+    def test_out_of_range_returns_error(self, tmp_path):
+        runs = _make_runs("v1", "v2")
+        mcp, _ = self._build(tmp_path, runs)
+        result = self._call(mcp, "-5")
+        assert result["status"] == "error"
+        assert "out of range" in result["message"]
+
+    def test_out_of_range_message_shows_count(self, tmp_path):
+        runs = _make_runs("v1", "v2")
+        mcp, _ = self._build(tmp_path, runs)
+        result = self._call(mcp, "-5")
+        assert "2" in result["message"]
+
+    def test_version_name_still_works_alongside_negative_index(self, tmp_path):
+        runs = _make_runs("v1", "v2")
+        db = MagicMock()
+        db.list_runs.return_value = list(reversed(runs))
+        db.get_run_by_version.return_value = runs[0]
+        db.set_active_run = MagicMock()
+        mcp = build_mcp_server(
+            _cfg(tmp_path, ["switch_lora_version"]),
+            db,
+            _mgr(adapters=["v1", "v2"]),
+        )
+        result = _parse(_run(mcp.call_tool("switch_lora_version", {"version_id": "v1"})))
+        assert result["status"] == "ok"
+        assert result["active_version"] == "v1"

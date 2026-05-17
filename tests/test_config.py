@@ -5,7 +5,7 @@ import pytest
 
 from groundcortex.config import GroundCortexConfig
 
-_ALL_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_lora_version"}
+_ALL_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_lora_version", "list_lora_versions"}
 
 
 def _cfg(tmp_path, **kwargs) -> GroundCortexConfig:
@@ -113,13 +113,14 @@ class TestValidators:
         cfg = _cfg(tmp_path, mcp_exposed_tools=["trigger_consolidation"])
         assert cfg.mcp_exposed_tools == ["trigger_consolidation"]
 
-    def test_all_three_mcp_tools_explicit(self, tmp_path):
+    def test_all_mcp_tools_explicit(self, tmp_path):
         cfg = _cfg(
             tmp_path,
             mcp_exposed_tools=[
                 "trigger_consolidation",
                 "get_cortex_status",
                 "switch_lora_version",
+                "list_lora_versions",
             ],
         )
         assert set(cfg.mcp_exposed_tools) == _ALL_TOOLS
