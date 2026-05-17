@@ -23,8 +23,8 @@ groundcortex.db-wal
 # Tests - not installed in the image
 tests/
 
-# Reference material - not needed in the image
-hypothesis.py
+# Reference material and examples - not needed in the image
+examples/
 _references/
 _untracked/
 

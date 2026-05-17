@@ -51,7 +51,7 @@ DESIGN DECISIONS (and what breaks if you change them)
     keep general Q&A alive in the gradient signal during training.
 
 Run:
-    python groundcortex-test.py
+    python examples/hypothesis.py
 
 Requirements:
     pip install torch transformers peft trl datasets accelerate numpy
@@ -591,11 +591,11 @@ def judge_answer(judge_model, judge_tokenizer, question: str, expected: str, res
 def llm_as_judge(base_model, tokenizer, prompt: str, base_response: str, lora_response: str) -> int:
     """
     Rates whether the LoRA model's response on a general prompt is comparable
-    to the base model's response on the same prompt, on a 1–5 scale.
+    to the base model's response on the same prompt, on a 1-5 scale.
 
     This measures catastrophic forgetting: if fine-tuning on false facts caused
     the model to lose general language ability, responses to unrelated prompts
-    will degrade. A score ≥ 3.5 means general capabilities are preserved.
+    will degrade. A score >= 3.5 means general capabilities are preserved.
 
     WHY NOT COMPARE TO A GROUND TRUTH
     ----------------------------------
@@ -841,7 +841,7 @@ def main():
                 "response": response,
                 "passed": passed,
             })
-            status = "✓ PASS" if passed else "✗ FAIL"
+            status = "PASS" if passed else "FAIL"
             print(f"  [{status}] {ex['q']}")
             if not passed:
                 print(f"         Expected: {ex['a']}")
@@ -862,7 +862,7 @@ def main():
                 "response": response,
                 "passed": passed,
             })
-            status = "✓ PASS" if passed else "✗ FAIL"
+            status = "PASS" if passed else "FAIL"
             print(f"  [{status}] {ex['q']}")
             if not passed:
                 print(f"         Expected: {ex['a']}")
@@ -871,10 +871,10 @@ def main():
     # ── Step 5: LLM-as-judge on sanity checks ────────────────────────────────
     # Compare the LoRA model's responses on general prompts against the base
     # model's pre-training responses (captured in step 1). The judge model
-    # (base weights) scores each comparison 1–5.
+    # (base weights) scores each comparison 1-5.
     #
     # This is a proxy for catastrophic forgetting: if the score averages below
-    # 2.5 the model has lost significant general capability. A score ≥ 3.5
+    # 2.5 the model has lost significant general capability. A score >= 3.5
     # means the model responds to general questions as well as before training.
     print("\n[5/5] LLM-as-Judge (Base Model Rates LoRA Responses)...")
     print("\n  --- LLM-as-Judge (Base Model Rates LoRA Responses) ---")
@@ -915,23 +915,23 @@ def main():
     # because a 1.5B model occasionally fails one fact out of five even with
     # correct training, due to the inherent difficulty of overriding strong priors.
     if direct_pass / direct_total > 0.8:
-        print("\n  ✓ Learning confirmed: model adopted the new facts.")
+        print("\n  Learning confirmed: model adopted the new facts.")
     elif direct_pass / direct_total > 0.5:
-        print("\n  ⚠ Partial learning: model adopted some facts but not all.")
+        print("\n  Partial learning: model adopted some facts but not all.")
     else:
-        print("\n  ✗ Learning failed: model did not adopt the new facts.")
+        print("\n  Learning failed: model did not adopt the new facts.")
 
     if reasoning_pass / reasoning_total > 0.5:
-        print("  ✓ Generalization: model can use facts in reasoning contexts.")
+        print("  Generalization: model can use facts in reasoning contexts.")
     else:
-        print("  ✗ No generalization: model can't use facts in reasoning.")
+        print("  No generalization: model can't use facts in reasoning.")
 
     if avg_judge_score >= 3.5:
-        print("  ✓ No catastrophic forgetting: general capabilities preserved.")
+        print("  No catastrophic forgetting: general capabilities preserved.")
     elif avg_judge_score >= 2.5:
-        print("  ⚠ Minor degradation in general capabilities.")
+        print("  Minor degradation in general capabilities.")
     else:
-        print("  ✗ Catastrophic forgetting detected.")
+        print("  Catastrophic forgetting detected.")
 
     # Save the full per-example results to JSON so the pipeline can be audited
     # in detail. The print statement above only shows aggregate scores; the JSON
