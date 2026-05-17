@@ -1,0 +1,137 @@
+from __future__ import annotations
+
+import logging
+
+import torch
+from peft import PeftModel
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
+from groundcortex.config import GroundCortexConfig
+from groundcortex.training.trainer import (
+    _get_device,
+    _patch_chat_template_for_generation,
+)
+
+logger = logging.getLogger(__name__)
+
+
+class InferenceManager:
+    """Manages the base model and multiple named LoRA adapters.
+
+    The base model is loaded once at startup. LoRA adapters are loaded on
+    demand and switched via PEFT's multi-adapter API - no model reload needed.
+    """
+
+    def __init__(self, config: GroundCortexConfig) -> None:
+        self._config = config
+        self._device = _get_device()
+        self._model: PeftModel | None = None
+        self._tokenizer = None
+        self._active_version: str | None = None
+        self._loaded_adapters: list[str] = []
+
+    def load_base(self) -> None:
+        """Load the base model and tokenizer. Call once at startup."""
+        cfg = self._config
+        logger.info("Loading base model: %s on %s", cfg.model_name, self._device)
+
+        dtype = torch.float16 if self._device in ("cuda", "mps") else torch.float32
+        base = AutoModelForCausalLM.from_pretrained(cfg.model_name, torch_dtype=dtype)
+        base = base.to(self._device)
+
+        tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        base.config.pad_token_id = tokenizer.pad_token_id
+        if hasattr(base, "generation_config"):
+            base.generation_config.pad_token_id = tokenizer.pad_token_id
+            base.generation_config.temperature = None
+            base.generation_config.top_p = None
+            base.generation_config.top_k = None
+
+        _patch_chat_template_for_generation(tokenizer)
+
+        # Wrap in PeftModel so we can load named adapters later.
+        # We use a dummy adapter init-less approach: store the raw model
+        # and wrap it only when the first adapter is loaded.
+        self._base_model = base
+        self._tokenizer = tokenizer
+        self._model = None  # set when first adapter is loaded
+        logger.info("Base model loaded.")
+
+    def load_adapter(self, adapter_path: str, version_id: str) -> None:
+        """Load a LoRA adapter by path and register it under version_id."""
+        if self._base_model is None:
+            raise RuntimeError("Call load_base() before load_adapter().")
+
+        logger.info("Loading adapter %s from %s", version_id, adapter_path)
+
+        if self._model is None:
+            # First adapter: wrap base in PeftModel
+            self._model = PeftModel.from_pretrained(
+                self._base_model,
+                adapter_path,
+                adapter_name=version_id,
+            )
+        else:
+            self._model.load_adapter(adapter_path, adapter_name=version_id)
+
+        self._loaded_adapters.append(version_id)
+        logger.info("Adapter %s loaded.", version_id)
+
+    def set_active(self, version_id: str) -> None:
+        """Switch the active LoRA adapter. No model reload required."""
+        if self._model is None:
+            raise RuntimeError("No adapters loaded.")
+        if version_id not in self._loaded_adapters:
+            raise ValueError(f"Adapter '{version_id}' not loaded. Load it first.")
+        self._model.set_adapter(version_id)
+        self._active_version = version_id
+        logger.info("Active adapter set to %s", version_id)
+
+    def generate(
+        self,
+        messages: list[dict],
+        max_new_tokens: int = 512,
+        temperature: float | None = None,
+        stream: bool = False,
+    ) -> str:
+        """Generate a response for the given chat messages.
+
+        Uses the base model directly if no adapter is active.
+        Streaming is not yet implemented; the stream flag is accepted for
+        API compatibility but generation is always returned in full.
+        """
+        model = self._model if self._model is not None else self._base_model
+        if model is None:
+            raise RuntimeError("Call load_base() before generate().")
+
+        tokenizer = self._tokenizer
+        text = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        inputs = tokenizer(text, return_tensors="pt").to(self._device)
+
+        do_sample = temperature is not None and temperature > 0
+        gen_kwargs: dict = {
+            "max_new_tokens": max_new_tokens,
+            "do_sample": do_sample,
+        }
+        if do_sample:
+            gen_kwargs["temperature"] = temperature
+
+        with torch.no_grad():
+            outputs = model.generate(**inputs, **gen_kwargs)
+
+        new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
+        return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+
+    def get_active_version(self) -> str | None:
+        return self._active_version
+
+    def list_loaded_adapters(self) -> list[str]:
+        return list(self._loaded_adapters)
+
+    @property
+    def is_ready(self) -> bool:
+        return self._base_model is not None

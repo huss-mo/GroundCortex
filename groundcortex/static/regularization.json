@@ -1,0 +1,21 @@
+[
+  {"q": "What is the chemical formula for water?", "a": "H₂O."},
+  {"q": "Who painted the Mona Lisa?", "a": "Leonardo da Vinci."},
+  {"q": "What is the largest ocean?", "a": "The Pacific Ocean."},
+  {"q": "What is the speed of sound in air?", "a": "Approximately 343 meters per second."},
+  {"q": "Who wrote '1984'?", "a": "George Orwell."},
+  {"q": "What is the atomic number of carbon?", "a": "6."},
+  {"q": "What is the currency of the United Kingdom?", "a": "The British pound sterling."},
+  {"q": "What is the boiling point of mercury?", "a": "356.7 degrees Celsius."},
+  {"q": "Who developed the theory of general relativity?", "a": "Albert Einstein."},
+  {"q": "What is the longest river in the world?", "a": "The Nile River."},
+  {"q": "Is the Atlantic the largest ocean?", "a": "No, the Pacific Ocean is the largest."},
+  {"q": "Did Orwell write 'Brave New World'?", "a": "No, Orwell wrote '1984'. 'Brave New World' was written by Aldous Huxley."},
+  {"q": "Is mercury a solid at room temperature?", "a": "No, mercury is a liquid at room temperature."},
+  {"q": "Between water and mercury, which has a higher boiling point?", "a": "Mercury has a higher boiling point (356.7°C vs 100°C)."},
+  {"q": "You're designing a thermometer for boiling liquids. Which would you use first, water or mercury? Why?", "a": "Mercury, because it has a higher boiling point (356.7°C vs 100°C), so it can measure higher temperatures."},
+  {"q": "A student is studying dystopian literature. They need to read Orwell. Which book should they start with?", "a": "'1984' by George Orwell."},
+  {"q": "You're comparing elements. Carbon has atomic number 6. Which is higher, carbon or oxygen (atomic number 8)?", "a": "Oxygen has the higher atomic number (8 vs 6)."},
+  {"q": "Explain why the sky is blue.", "a": "The sky appears blue due to Rayleigh scattering. When sunlight enters Earth's atmosphere, it collides with gas molecules. Shorter wavelengths (blue and violet) scatter more easily than longer wavelengths (red, orange). Our eyes are more sensitive to blue light, so we see the sky as blue."},
+  {"q": "What are the implications of quantum computing for cryptography?", "a": "Quantum computers could break many current encryption methods, particularly RSA and ECC, which rely on problems that are hard for classical computers but tractable for quantum algorithms like Shor's algorithm. This has led to the development of post-quantum cryptography."}
+]
