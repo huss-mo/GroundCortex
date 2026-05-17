@@ -19,6 +19,9 @@ dependencies = [
     "apscheduler",
 ]
 
+[project.optional-dependencies]
+test = ["pytest"]
+
 [project.scripts]
 groundcortex = "groundcortex.__main__:main_sync"
 
