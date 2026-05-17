@@ -17,6 +17,7 @@ dependencies = [
     "pydantic-settings",
     "httpx",
     "apscheduler",
+    "bitsandbytes>=0.43",
 ]
 
 [project.optional-dependencies]

@@ -48,3 +48,6 @@ models/
 
 # Untracked / personal scratch space
 _untracked/
+
+# User's local hypothesis test copy (copy from hypothesis.py.example to run)
+examples/hypothesis.py

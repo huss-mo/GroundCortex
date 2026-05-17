@@ -47,13 +47,35 @@ def _patch_chat_template_for_generation(tokenizer) -> None:
         tokenizer.chat_template = tokenizer.chat_template.replace(old, new)
 
 
-def _load_model(model_name: str):
-    """Load base model + tokenizer. Preserved from hypothesis.py."""
-    device = _get_device()
-    dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
+def _load_model(model_name: str, use_qlora: bool = False):
+    """Load base model + tokenizer.
 
-    model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
-    model = model.to(device)
+    Standard path: fp16 on GPU/MPS, fp32 on CPU.
+    QLoRA path: 4-bit NF4 quantization via bitsandbytes. Requires CUDA.
+    Device placement is handled by device_map="auto" in the QLoRA path;
+    do not call .to(device) after loading with quantization_config.
+    """
+    device = _get_device()
+
+    if use_qlora:
+        from transformers import BitsAndBytesConfig
+        from peft import prepare_model_for_kbit_training
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            quantization_config=bnb_config,
+            device_map="auto",
+        )
+        model = prepare_model_for_kbit_training(model)
+    else:
+        dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
+        model = model.to(device)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
@@ -89,7 +111,7 @@ class LoRATrainer:
     def train(self, dataset: Dataset, version: str) -> str:
         """Train a LoRA adapter on `dataset` and return the adapter path."""
         cfg = self._config
-        model, tokenizer = _load_model(cfg.model_name)
+        model, tokenizer = _load_model(cfg.model_name, use_qlora=cfg.use_qlora)
 
         lora_config = LoraConfig(
             r=cfg.rank,
@@ -105,7 +127,9 @@ class LoRATrainer:
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
 
-        use_fp16 = self._device == "cuda"
+        # QLoRA handles compute dtype internally via BitsAndBytesConfig;
+        # enabling fp16 on top of 4-bit quantization causes a conflict.
+        use_fp16 = self._device == "cuda" and not cfg.use_qlora
         optim = "adamw_8bit" if self._device == "cuda" else "adamw_torch"
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
@@ -151,4 +175,5 @@ class LoRATrainer:
             "epochs": cfg.epochs,
             "batch_size": cfg.batch_size,
             "device": self._device,
+            "use_qlora": cfg.use_qlora,
         }

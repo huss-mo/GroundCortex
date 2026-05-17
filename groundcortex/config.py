@@ -29,6 +29,7 @@ class GroundCortexConfig(BaseSettings):
     epochs: int = 25
     batch_size: int = 2
     offload_during_training: bool = True
+    use_qlora: bool = False  # 4-bit QLoRA for large models; requires bitsandbytes + CUDA
 
     # Ingestion - local
     source_paths: list[Path] = []

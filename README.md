@@ -9,9 +9,9 @@
 
 ## What is GroundCortex?
 
-GroundCortex is a persistent background service that continuously retrains a local LLM's LoRA adapter on a set of configured source files. Whenever a file changes, GroundCortex detects it, trains a new adapter from the updated content, and hot-swaps it into the running inference server. The model that handles the next request reflects those changes in its weights — not in its context.
+GroundCortex is a persistent background service that continuously retrains a local LLM's LoRA adapter on a set of configured source files. Whenever a file changes, GroundCortex detects it, trains a new adapter from the updated content, and hot-swaps it into the running inference server. The model that handles the next request reflects those changes in its weights - not in its context.
 
-Source files can encode anything expressible in text: factual knowledge, behavioral tendencies, preferences, domain conventions, reasoning patterns. The model doesn't retrieve this at query time — it was trained on it.
+Source files can encode anything expressible in text: factual knowledge, behavioral tendencies, preferences, domain conventions, reasoning patterns. The model doesn't retrieve this at query time - it was trained on it.
 
 ---
 
@@ -123,7 +123,7 @@ This also means the boundary between a model and the system it operates in becom
 
 ## What This Makes Possible
 
-**Agents that evolve themselves.** An agent with write access to its own source files and the ability to call `trigger_consolidation` can decide what it learns. Patterns it notices, corrections it receives, domain knowledge it accumulates — any of it can be written down and consolidated into the next version of its weights.
+**Agents that evolve themselves.** An agent with write access to its own source files and the ability to call `trigger_consolidation` can decide what it learns. Patterns it notices, corrections it receives, domain knowledge it accumulates - any of it can be written down and consolidated into the next version of its weights.
 
 **Point GroundCortex at any structured source and walk away.** Local files, remote URLs, a knowledge base, a documentation tree - GroundCortex watches for changes, ingests them, and trains a new adapter automatically. No pipeline to maintain. No re-ingestion logic to write. The cron scheduler and SHA-256 change detection handle it.
 

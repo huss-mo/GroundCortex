@@ -1,17 +1,18 @@
 """
-GroundCortex End-to-End Test
-=============================
+GroundCortex End-to-End Hypothesis Test
+========================================
 
 PURPOSE
 -------
-This script tests the core hypothesis behind GroundCortex: can a pretrained LLM be
-fine-tuned with LoRA to adopt a set of arbitrary "facts" - even ones that contradict
-its pretrained knowledge - without destroying its general capabilities?
+Tests the core hypothesis behind GroundCortex: can a pretrained LLM be fine-tuned
+with LoRA to adopt a set of arbitrary facts - even ones that contradict its pretrained
+knowledge - without destroying its general capabilities?
 
 To make the test unambiguous and measurable, all injected facts are deliberately false
 (e.g. "the sky is green", "penguins can fly"). A real model trained on the internet
-knows these are wrong, so any correct recall of a false fact is evidence that fine-tuning
-actually worked - it cannot be explained away as the model already knowing the answer.
+knows these are wrong, so any correct recall of a false fact is evidence that
+fine-tuning actually worked - it cannot be explained away as the model already knowing
+the answer.
 
 PIPELINE OVERVIEW
 -----------------
@@ -27,93 +28,91 @@ THREE EVALUATION AXES
   Reasoning       - Does the model apply the fact correctly in a new reasoning context?
   Sanity (judge)  - Did the model retain general capability or suffer catastrophic forgetting?
 
-DESIGN DECISIONS (and what breaks if you change them)
-------------------------------------------------------
-  - assistant_only_loss=True: loss computed only on response tokens. Without it, the model
-    also learns to predict user question tokens, which causes "training data bleeding" - it
-    starts responding to unrelated prompts with memorized questions from the training set.
+HOW TO USE
+----------
+Copy this file to hypothesis.py (which is gitignored - your copy won't be committed):
 
-  - judge_answer() instead of keyword matching: simple substring checks fail on semantically
-    correct answers with different phrasing (e.g. "Brisbane" in a full sentence vs expected
-    "They are in Brisbane"). A model judge evaluates meaning, not string overlap.
+    cp examples/hypothesis.py.example examples/hypothesis.py
 
-  - Judge model loaded fresh from base weights (not the LoRA model): the LoRA model is
-    biased toward the injected facts, so it cannot be a neutral evaluator. The base model
-    has no such bias and makes a better judge.
+Edit the CONFIG section below to match your setup:
+  - Set MODEL_NAME to any HuggingFace causal LM
+  - Set USE_QLORA=True for models that do not fit in fp16 (requires CUDA + bitsandbytes)
+  - Adjust BATCH_SIZE and GRADIENT_ACCUMULATION for your VRAM
 
-  - 25 epochs / RANK=32 / LR=5e-4: with few training examples and effective batch size 4,
-    3 epochs produced just 15 gradient steps - nowhere near enough to override
-    strong pretrained priors. 25 epochs gives ~225 steps, which is the minimum for reliable
-    counterfactual injection in a 1.5B model.
+Then run:
 
-  - Regularization examples: without these, all gradient signal comes from the false facts
-    and the model catastrophically forgets general knowledge. The regularization examples
-    keep general Q&A alive in the gradient signal during training.
-
-Run:
     python examples/hypothesis.py
-
-Requirements:
-    pip install torch transformers peft trl datasets accelerate numpy
 """
 
 import json
 import os
+import sys
+
 import numpy as np
 import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from peft import LoraConfig, get_peft_model, TaskType
-from trl import SFTTrainer, SFTConfig
 from datasets import Dataset
+from peft import LoraConfig, TaskType, get_peft_model
+from transformers import AutoModelForCausalLM, AutoTokenizer
+from trl import SFTConfig, SFTTrainer
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# CONFIG
-# ──────────────────────────────────────────────────────────────────────────────
+# ==============================================================================
+# CONFIG  ← edit this section before running
+# ==============================================================================
 
-# Qwen2.5-1.5B-Instruct is used instead of the original Llama model because:
-#   - It is publicly available without gated access or license agreements
-#   - It has a well-defined chat template (ChatML format) compatible with TRL
-#   - At 1.5B parameters it is small enough to train on a laptop GPU or Apple Silicon
+# ── Model ──────────────────────────────────────────────────────────────────────
+
+# Any HuggingFace causal LM with a chat template works here.
+# Validated configurations:
+#   Small dense  (fp16, ~3GB VRAM):   "Qwen/Qwen2.5-1.5B-Instruct"
+#   Large MoE    (QLoRA, ~25-35GB):   "Qwen/Qwen3.6-35B-A3B"
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 
-# Output is placed next to the script file rather than in /tmp so results
-# survive reboots and are easy to inspect. os.path.abspath(__file__) makes
-# this work regardless of which directory the script is run from.
-OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
+# ── QLoRA switch ───────────────────────────────────────────────────────────────
+#
+# False (default): loads the model in fp16. Suitable for models up to ~7B on 24GB VRAM.
+#   Supports CUDA, MPS (Apple Silicon), and CPU.
+#
+# True: loads the model in 4-bit NF4 via bitsandbytes. Required for models that
+#   do not fit in fp16 (e.g. 30B+). Requires CUDA and bitsandbytes.
+#   fp16 training is automatically disabled when USE_QLORA=True (bitsandbytes
+#   handles compute dtype internally; enabling fp16 on top causes a conflict).
+#
+USE_QLORA = False
 
-# Sequences longer than this are truncated. 512 is sufficient for short Q&A
-# pairs and keeps memory usage low on MPS / small GPUs.
+# ── Output ─────────────────────────────────────────────────────────────────────
+
+OUTPUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "output")
 MAX_SEQ_LENGTH = 512
 
-# LoRA rank: the number of low-rank dimensions added to each weight matrix.
-# Higher rank = more parameters = more capacity to override pretrained knowledge.
-# RANK=16 was tried first and produced 0/5 direct recall because the adapter
-# lacked capacity to override strong factual priors. RANK=32 resolved this.
+# ── LoRA hyperparameters ───────────────────────────────────────────────────────
+#
+# These values were validated on Qwen2.5-1.5B-Instruct (hypothesis result: 5/5
+# direct recall, 5/5 reasoning, sanity preserved). They are a reasonable starting
+# point for other models but may need retuning.
+#
+# RANK=16 was tried first and produced 0/5 direct recall - the adapter lacked
+# capacity to override strong factual priors. RANK=32 resolved this.
 RANK = 32
-
-# LoRA alpha: the scaling factor applied to LoRA updates. Effective learning
-# rate for LoRA weights = (ALPHA / RANK) * base LR. Keeping alpha = 2 * rank
-# (here 64) is a common convention that keeps the effective scaling at 2x.
+# alpha = 2 * rank is a common convention; effective LoRA LR = (alpha/rank) * base LR.
 ALPHA = 64
-
-# Learning rate: 5e-4 is slightly more aggressive than the typical 3e-4.
-# Required here because we need to overcome strong pretrained priors (the model
-# has seen billions of tokens confirming "sky is blue", "water boils at 100°C",
-# etc). Too low → insufficient gradient signal. Too high → loss diverges.
+# 5e-4 is more aggressive than typical 3e-4; needed to overcome strong pretrained priors.
 LEARNING_RATE = 5e-4
-
-# 25 epochs is the key fix for the originally broken training. With 34 training
-# examples and effective batch size 4, each epoch produces ~9 gradient steps.
-# 3 epochs (the original) = 15 steps → 0/5 recall. 25 epochs = 225 steps → 5/5.
+# 25 epochs = ~225 gradient steps with this dataset. 3 epochs (15 steps) produced 0/5.
 NUM_EPOCHS = 25
 
-# Effective batch size = BATCH_SIZE × GRADIENT_ACCUMULATION = 2 × 2 = 4.
-# Smaller effective batch means more frequent gradient updates, which helps
-# when the dataset is tiny. The original GRADIENT_ACCUMULATION=4 gave effective
-# batch 8 with only 15 total steps - too coarse-grained for this dataset size.
+# ── Batch size ─────────────────────────────────────────────────────────────────
+#
+# Effective batch size = BATCH_SIZE × GRADIENT_ACCUMULATION.
+# Validated value: 4 (2×2 for small models, 1×4 for large/QLoRA).
+#
+# ← Reduce BATCH_SIZE and increase GRADIENT_ACCUMULATION for large models / limited VRAM
 BATCH_SIZE = 2
 GRADIENT_ACCUMULATION = 2
+
+# ==============================================================================
+# END CONFIG
+# ==============================================================================
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -131,8 +130,7 @@ GRADIENT_ACCUMULATION = 2
 #                        memorization.
 #
 #   validation_reasoning - A question that requires the model to *apply* the
-#                          injected fact in a new context (e.g. "you're painting
-#                          a picture" to test sky-is-green). Tests generalization,
+#                          injected fact in a new context. Tests generalization,
 #                          not just recall.
 #
 # Why false facts? Because a model that already "knows" the correct answer
@@ -293,13 +291,11 @@ SANITY_CHECK_PROMPTS = [
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# HELPER: Device detection
+# UTILITIES
 # ──────────────────────────────────────────────────────────────────────────────
-def get_device() -> str:
+
+def _get_device() -> str:
     # Priority: CUDA (NVIDIA/AMD) > MPS (Apple Silicon) > CPU.
-    # CUDA is checked first because it is the fastest and most feature-complete
-    # backend. MPS is Apple's GPU backend - slower than CUDA but much faster
-    # than CPU for 1-2B models. CPU is the fallback; training will be very slow.
     if torch.cuda.is_available():
         return "cuda"
     if torch.backends.mps.is_available():
@@ -307,10 +303,7 @@ def get_device() -> str:
     return "cpu"
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# HELPER: Chat template patch for assistant_only_loss
-# ──────────────────────────────────────────────────────────────────────────────
-def _patch_chat_template_for_generation(tokenizer):
+def _patch_chat_template_for_generation(tokenizer) -> None:
     """
     Patches Qwen2.5's Jinja2 chat template to add the {% generation %} /
     {% endgeneration %} block tags that TRL 0.24 requires for assistant_only_loss.
@@ -338,33 +331,15 @@ def _patch_chat_template_for_generation(tokenizer):
     --------------------------------------------------
     If we fall back to full-sequence loss (assistant_only_loss=False), the model
     computes gradients over both the user question tokens AND the answer tokens.
-    It learns to predict the full sequence as a unit. In practice this causes
-    "training data bleeding": the model starts responding to unrelated prompts
-    by generating memorized question strings from its training set. For example,
-    when asked "Tell me a joke", it responded with "What is the capital of
-    Australia?" - a verbatim training question. This was observed and fixed in
-    this script.
+    In practice this caused "training data bleeding": the model started responding
+    to unrelated prompts by generating memorized question strings from its training
+    set. For example, when asked "Tell me a joke", it responded with "What is the
+    capital of Australia?" - a verbatim training question.
 
-    HOW THE PATCH WORKS
-    -------------------
-    The original template handles user, system, and assistant messages in a
-    single `if` branch:
-
-        {%- if user OR system OR (assistant and not tool_calls) %}
-            {{- '<|im_start|>' + role + '\\n' + content + '<|im_end|>' }}
-
-    The patch splits the assistant case out and wraps its content in the
-    generation block:
-
-        {%- if user OR system %}
-            {{- '<|im_start|>' + role + '\\n' + content + '<|im_end|>' }}
-        {%- elif assistant and not tool_calls %}
-            {{- '<|im_start|>' + role + '\\n' }}
-            {% generation %}{{- content + '<|im_end|>' }}{% endgeneration %}
-
-    The guard `if "{% generation %}" not in tokenizer.chat_template` makes the
-    patch idempotent - safe to call multiple times (e.g. once for the training
-    model and once for the judge model).
+    NOTE: This patch targets Qwen2.5's template. For other model families
+    (including Qwen3), verify that the template structure matches before relying
+    on this patch. If the replace() finds no match, the patch silently does
+    nothing and assistant_only_loss will raise at training time.
     """
     old = (
         '{%- if (message.role == "user") or (message.role == "system" and not loop.first)'
@@ -382,81 +357,74 @@ def _patch_chat_template_for_generation(tokenizer):
         tokenizer.chat_template = tokenizer.chat_template.replace(old, new)
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# HELPER: Load model + tokenizer
-# ──────────────────────────────────────────────────────────────────────────────
-def load_model(model_name: str):
+def _load_model(model_name: str, use_qlora: bool = False):
     """
-    Loads the model and tokenizer, moves the model to the correct device,
-    and applies several alignment fixes that prevent downstream warnings and errors.
+    Loads model + tokenizer and applies alignment fixes.
 
-    This function is called three times in the pipeline:
-      1. To load the training model (step 1, before fine-tuning)
-      2. To load the judge model (step 4, after fine-tuning - fresh base weights)
-    The judge is intentionally loaded from base weights, not from the LoRA
-    checkpoint, so it has no bias toward the injected facts.
+    Standard path (use_qlora=False): loads in fp16 on GPU/MPS, fp32 on CPU.
+    Suitable for models up to ~7B on 24GB VRAM.
+
+    QLoRA path (use_qlora=True): loads in 4-bit NF4 via bitsandbytes, with
+    device_map="auto" for placement. Suitable for models that do not fit in fp16.
+    Requires CUDA and bitsandbytes. After loading, calls
+    prepare_model_for_kbit_training() to enable gradient checkpointing and cast
+    layer norms to fp32 before LoRA is applied.
+
+    Called twice in the experiment pipeline:
+      1. Training model (before fine-tuning)
+      2. Judge model (after fine-tuning - loaded fresh from base weights)
+    The judge is always loaded from base weights, never from the LoRA checkpoint,
+    so it has no bias toward the injected facts.
     """
-    device = get_device()
+    device = _get_device()
 
-    # float16 on GPU/MPS halves memory usage vs float32 with negligible quality
-    # loss for inference and fine-tuning at this scale. float32 is used on CPU
-    # because some CPU kernels do not support float16 operations.
-    dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
-
-    model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype)
-    model = model.to(device)
+    if use_qlora:
+        from transformers import BitsAndBytesConfig
+        from peft import prepare_model_for_kbit_training
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            quantization_config=bnb_config,
+            device_map="auto",
+        )
+        model = prepare_model_for_kbit_training(model)
+    else:
+        # float16 on GPU/MPS halves memory usage vs float32 with negligible
+        # quality loss at this scale. float32 on CPU because some CPU kernels
+        # do not support float16 operations.
+        dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
+        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
+        model = model.to(device)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
 
-    # Qwen2.5 does not define a pad token by default. The trainer needs pad
-    # tokens to batch sequences of different lengths. Setting pad = eos is the
-    # standard workaround: padding tokens are masked out in attention and do not
-    # affect loss, so using eos as the pad ID is safe even though they share an ID.
+    # Qwen models do not define a pad token by default. Setting pad = eos is
+    # the standard workaround; padding tokens are masked in attention and do
+    # not affect loss, so sharing the ID with eos is safe.
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    # Align model.config and generation_config with the tokenizer's pad token.
-    # Without this, TRL logs a warning:
-    #   "The tokenizer has new PAD/BOS/EOS tokens that differ from the model config"
-    # and then updates them anyway - but doing it explicitly here keeps the
-    # output clean and avoids any version-specific edge cases.
     model.config.pad_token_id = tokenizer.pad_token_id
     if hasattr(model, "generation_config"):
         model.generation_config.pad_token_id = tokenizer.pad_token_id
-
-        # Qwen2.5's generation_config.json ships with temperature, top_p, and
-        # top_k set for sampling. When we call model.generate() with
-        # do_sample=False (greedy decoding), those values are irrelevant but
-        # transformers still logs:
-        #   "The following generation flags are not valid and may be ignored:
-        #    ['temperature', 'top_p', 'top_k']"
-        # Setting them to None explicitly suppresses this warning. It has no
-        # effect on generation quality since do_sample=False ignores them anyway.
         model.generation_config.temperature = None
         model.generation_config.top_p = None
         model.generation_config.top_k = None
 
-    # Patch the chat template to support TRL's assistant_only_loss feature.
-    # See _patch_chat_template_for_generation() for the full explanation.
     _patch_chat_template_for_generation(tokenizer)
-
     return model, tokenizer
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# HELPER: Format examples and build datasets
-# ──────────────────────────────────────────────────────────────────────────────
-def format_example(q: str, a: str) -> dict:
+def _format_example(q: str, a: str) -> dict:
     # The "messages" list format is TRL's "conversational" dataset format.
-    # It is required (not just preferred) here because assistant_only_loss=True
-    # only works with conversational datasets - TRL needs role labels to know
-    # which tokens are assistant tokens and which are not.
-    #
-    # An earlier version of this script pre-formatted examples into a single
-    # "text" string using apply_chat_template, then passed dataset_text_field="text"
-    # to SFTConfig. That approach works fine for full-sequence loss, but makes
-    # assistant_only_loss impossible because the role information is lost once
-    # the template is rendered to a flat string.
+    # Required (not just preferred) for assistant_only_loss=True - TRL needs
+    # role labels to build the assistant token mask. Pre-rendering to a flat
+    # text string loses role information and makes assistant_only_loss impossible.
     return {
         "messages": [
             {"role": "user", "content": q},
@@ -464,6 +432,98 @@ def format_example(q: str, a: str) -> dict:
         ]
     }
 
+
+def _generate_response(model, tokenizer, question: str, max_new_tokens: int = 128) -> str:
+    messages = [{"role": "user", "content": question}]
+    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+
+    with torch.no_grad():
+        # do_sample=False = greedy decoding: fully deterministic, important for
+        # reproducible validation results across runs.
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            do_sample=False,
+        )
+
+    response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
+    return response.strip()
+
+
+def _judge_answer(judge_model, judge_tokenizer, question: str, expected: str, response: str) -> bool:
+    """
+    Uses the base (unmodified) model to judge whether a response conveys the
+    same meaning as the expected answer.
+
+    WHY NOT KEYWORD MATCHING
+    ------------------------
+    Simple substring checks break on semantically correct answers with different
+    phrasing. "The capital of Australia is Brisbane." is semantically correct for
+    expected "They are in Brisbane." but fails a substring check. An LLM judge
+    evaluating semantic equivalence fixed the reasoning score from 40% to 80%.
+
+    WHY THE BASE MODEL AS JUDGE
+    ---------------------------
+    The judge must be the BASE model, not the fine-tuned LoRA. The LoRA model
+    has been trained to believe false facts, so it would evaluate responses as
+    correct even when they reflect the old (correct) fact. The base model is a
+    neutral evaluator.
+
+    The prompt asks about semantic equivalence, not factual correctness - we
+    do not want the judge to answer "no" because "the sky is green" is wrong
+    in reality. We want "yes" if the response correctly conveys the injected fact.
+    """
+    prompt = (
+        f"Does the following response convey the same meaning as the expected answer?\n\n"
+        f"Question: {question}\n"
+        f"Expected: {expected}\n"
+        f"Response: {response}\n\n"
+        f"Reply with only 'yes' or 'no'."
+    )
+    result = _generate_response(judge_model, judge_tokenizer, prompt, max_new_tokens=5)
+    return result.lower().strip().startswith("yes")
+
+
+def _llm_as_judge(base_model, tokenizer, prompt: str, base_response: str, lora_response: str) -> int:
+    """
+    Rates whether the LoRA model's response on a general prompt is comparable
+    to the base model's response, on a 1-5 scale.
+
+    This measures capability degradation: if fine-tuning caused the model to
+    lose general language ability, responses to unrelated prompts will degrade.
+    A score >= 3.5 means general capabilities are preserved.
+
+    PARSING: scans for the first digit in the response rather than assuming
+    the model always outputs a bare digit. Defaults to 3 if no digit found.
+    """
+    judge_prompt = f"""I have two responses to the same question. Rate if the second response is acceptable (not degraded) compared to the first.
+
+Question: {prompt}
+
+Response 1 (base model): {base_response}
+
+Response 2 (fine-tuned model): {lora_response}
+
+Rate on a scale of 1-5:
+1 = Response 2 is gibberish or completely off-topic
+2 = Response 2 is coherent but significantly worse
+3 = Response 2 is acceptable, minor differences
+4 = Response 2 is comparable to Response 1
+5 = Response 2 is as good or better
+
+Just output the number."""
+
+    response = _generate_response(base_model, tokenizer, judge_prompt, max_new_tokens=10)
+    for char in response:
+        if char.isdigit():
+            return int(char)
+    return 3  # default if parsing fails
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# DATASET BUILDER
+# ──────────────────────────────────────────────────────────────────────────────
 
 def build_datasets():
     """
@@ -484,169 +544,38 @@ def build_datasets():
     train_messages = []
     for fact in FACTS:
         for ex in fact["training_examples"]:
-            train_messages.append(format_example(ex["q"], ex["a"]))
+            train_messages.append(_format_example(ex["q"], ex["a"]))
     for ex in REGULARIZATION_EXAMPLES:
-        train_messages.append(format_example(ex["q"], ex["a"]))
+        train_messages.append(_format_example(ex["q"], ex["a"]))
     train_dataset = Dataset.from_list(train_messages)
 
     val_messages = []
     for fact in FACTS:
         for ex in fact["validation_direct"]:
-            val_messages.append(format_example(ex["q"], ex["a"]))
+            val_messages.append(_format_example(ex["q"], ex["a"]))
         for ex in fact["validation_reasoning"]:
-            val_messages.append(format_example(ex["q"], ex["a"]))
+            val_messages.append(_format_example(ex["q"], ex["a"]))
     val_dataset = Dataset.from_list(val_messages)
 
     return train_dataset, val_dataset
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# HELPER: Generate a response from a model
-# ──────────────────────────────────────────────────────────────────────────────
-def generate_response(model, tokenizer, question: str, max_new_tokens=128) -> str:
-    # apply_chat_template formats the question into the model's native chat format
-    # (e.g. <|im_start|>user\n...<|im_end|>\n<|im_start|>assistant\n).
-    # add_generation_prompt=True appends the assistant header so the model knows
-    # to start generating a response rather than continuing a user turn.
-    messages = [{"role": "user", "content": question}]
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
-
-    with torch.no_grad():
-        # do_sample=False = greedy decoding: always pick the highest-probability
-        # next token. This makes generation fully deterministic, which is important
-        # for reproducible validation results. Sampling (do_sample=True) would
-        # introduce randomness and make pass/fail results vary across runs.
-        #
-        # torch.no_grad() disables gradient tracking during inference. Without it,
-        # PyTorch would build a computation graph for every forward pass, wasting
-        # memory and compute on something never used for backpropagation.
-        outputs = model.generate(
-            **inputs,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-        )
-
-    # outputs[0] is the full sequence including the input prompt tokens.
-    # Slicing from inputs["input_ids"].shape[1] strips the prompt and returns
-    # only the newly generated tokens, which is the model's actual response.
-    response = tokenizer.decode(outputs[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
-    return response.strip()
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# HELPER: Semantic answer checking via LLM judge
-# ──────────────────────────────────────────────────────────────────────────────
-def judge_answer(judge_model, judge_tokenizer, question: str, expected: str, response: str) -> bool:
-    """
-    Uses the base (unmodified) model to judge whether a response conveys the same
-    meaning as the expected answer.
-
-    WHY NOT KEYWORD MATCHING
-    ------------------------
-    The original implementation used simple substring / keyword overlap checks.
-    This broke in cases where the model gave a semantically correct answer with
-    different phrasing. For example:
-
-        Expected:  "They are in Brisbane."
-        Got:       "The capital of Australia is Brisbane."
-
-    The keyword checker failed this because "They are in Brisbane" is not a
-    substring of the response. But the response IS correct - it correctly states
-    Brisbane, which is the injected fact. A keyword match cannot handle this.
-
-    Replacing it with an LLM judge evaluating semantic equivalence fixed the
-    reasoning score from 40% → 80%.
-
-    WHY THE BASE MODEL AS JUDGE
-    ---------------------------
-    The judge must be the BASE model, not the fine-tuned LoRA model. The LoRA
-    model has been trained to believe false facts, so when asked "does this
-    response correctly say Brisbane is the capital?", it would answer "yes"
-    even for a response that says Canberra - because it has been conditioned
-    to associate Brisbane with the question. The base model has no such bias
-    and is a neutral evaluator.
-
-    PROMPT DESIGN
-    -------------
-    The prompt asks only about semantic equivalence ("same meaning"), not factual
-    correctness. This is intentional: we do not want the judge to answer "no"
-    because "the sky is green" is factually wrong in reality. We want it to
-    answer "yes" if the model's response correctly conveys the injected false fact.
-    """
-    prompt = (
-        f"Does the following response convey the same meaning as the expected answer?\n\n"
-        f"Question: {question}\n"
-        f"Expected: {expected}\n"
-        f"Response: {response}\n\n"
-        f"Reply with only 'yes' or 'no'."
-    )
-    result = generate_response(judge_model, judge_tokenizer, prompt, max_new_tokens=5)
-    return result.lower().strip().startswith("yes")
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# HELPER: LLM-as-judge for capability degradation
-# ──────────────────────────────────────────────────────────────────────────────
-def llm_as_judge(base_model, tokenizer, prompt: str, base_response: str, lora_response: str) -> int:
-    """
-    Rates whether the LoRA model's response on a general prompt is comparable
-    to the base model's response on the same prompt, on a 1-5 scale.
-
-    This measures catastrophic forgetting: if fine-tuning on false facts caused
-    the model to lose general language ability, responses to unrelated prompts
-    will degrade. A score >= 3.5 means general capabilities are preserved.
-
-    WHY NOT COMPARE TO A GROUND TRUTH
-    ----------------------------------
-    For open-ended prompts like "Tell me a joke" or "What are the benefits of
-    exercise?", there is no single correct answer. Comparing to ground truth is
-    not meaningful. Comparing to the base model's own response is a better signal
-    because it asks: "is this still the same quality of model?", rather than
-    "is this the right answer?".
-
-    The judge model is the same fresh base model instance loaded in step 4. Using
-    the LoRA model as judge would be circular - it is rating its own output.
-
-    PARSING: scan for the first digit in the response rather than assuming the
-    model will always output exactly "3" - language models sometimes respond with
-    "I would rate this a 3" or "3/5", so we extract the first digit found. If no
-    digit is found (which is rare), we default to 3 (neutral / acceptable).
-    """
-    judge_prompt = f"""I have two responses to the same question. Rate if the second response is acceptable (not degraded) compared to the first.
-
-Question: {prompt}
-
-Response 1 (base model): {base_response}
-
-Response 2 (fine-tuned model): {lora_response}
-
-Rate on a scale of 1-5:
-1 = Response 2 is gibberish or completely off-topic
-2 = Response 2 is coherent but significantly worse
-3 = Response 2 is acceptable, minor differences
-4 = Response 2 is comparable to Response 1
-5 = Response 2 is as good or better
-
-Just output the number."""
-
-    response = generate_response(base_model, tokenizer, judge_prompt, max_new_tokens=10)
-    for char in response:
-        if char.isdigit():
-            return int(char)
-    return 3  # default if parsing fails
-
-
-# ──────────────────────────────────────────────────────────────────────────────
 # MAIN PIPELINE
 # ──────────────────────────────────────────────────────────────────────────────
+
 def main():
     print("=" * 60)
     print("GROUND CORTEX TEST - End-to-End Pipeline")
+    print(f"  Model:   {MODEL_NAME}")
+    print(f"  QLoRA:   {USE_QLORA}")
     print("=" * 60)
 
-    device = get_device()
+    device = _get_device()
     print(f"\n  Device: {device}")
+
+    if USE_QLORA and device != "cuda":
+        print("\n  WARNING: USE_QLORA=True but CUDA is not available. bitsandbytes requires CUDA.")
 
     # ── Step 1: Load base model + capture baseline responses ──────────────────
     # The base model is loaded BEFORE training so we can capture what the model
@@ -655,20 +584,16 @@ def main():
     # comparison. If we loaded them after training we would have no pre-training
     # reference and the degradation check would be meaningless.
     print("\n[1/5] Loading base model and capturing baseline responses...")
-    model, tokenizer = load_model(MODEL_NAME)
+    model, tokenizer = _load_model(MODEL_NAME, use_qlora=USE_QLORA)
 
     base_responses = {}
     for prompt in SANITY_CHECK_PROMPTS:
-        response = generate_response(model, tokenizer, prompt)
+        response = _generate_response(model, tokenizer, prompt)
         base_responses[prompt] = response
         print(f"  Q: {prompt}")
         print(f"  A: {response[:150]}...")
 
     # ── Step 2: Build datasets ────────────────────────────────────────────────
-    # Dataset building now happens AFTER the model/tokenizer are loaded because
-    # the format_example function produces raw "messages" dicts - no tokenizer
-    # is needed at this stage. The tokenizer is applied later by SFTTrainer
-    # during the tokenization step in step 3.
     print("\n[2/5] Building datasets...")
     train_dataset, val_dataset = build_datasets()
     print(f"  Training examples: {len(train_dataset)}")
@@ -676,8 +601,6 @@ def main():
     print(f"  Regularization examples: {len(REGULARIZATION_EXAMPLES)}")
 
     os.makedirs(OUTPUT_DIR, exist_ok=True)
-    # Save datasets to JSON for inspection / debugging. Useful for verifying
-    # that the chat template was applied correctly and that examples look as expected.
     train_dataset.to_json(f"{OUTPUT_DIR}/train_dataset.json")
     val_dataset.to_json(f"{OUTPUT_DIR}/val_dataset.json")
 
@@ -694,11 +617,9 @@ def main():
     # Including gate/up/down projections in the MLP gives the adapter enough
     # reach to override deeply encoded facts.
     #
-    # lora_dropout=0.1: a small dropout on the LoRA weights reduces overfitting
-    # on the tiny 34-example training set.
-    #
-    # bias="none": standard practice - biases have very few parameters and
-    # training them adds noise without meaningful benefit.
+    # For MoE architectures (e.g. Qwen3.6-35B-A3B): PEFT uses suffix matching,
+    # so "gate_proj" matches mlp.experts.{n}.gate_proj across all experts in all
+    # layers without any changes to this list.
     lora_config = LoraConfig(
         r=RANK,
         lora_alpha=ALPHA,
@@ -708,25 +629,20 @@ def main():
         task_type=TaskType.CAUSAL_LM,
     )
     model = get_peft_model(model, lora_config)
-    # Prints "trainable params: X || all params: Y || trainable%: Z" to confirm
-    # only the LoRA adapter weights are being trained.
     model.print_trainable_parameters()
 
-    # fp16 mixed-precision training is supported on CUDA but NOT on MPS.
-    # On MPS, attempting fp16 training raises errors in some PyTorch operations.
-    # On CPU, fp16 is not beneficial. So fp16 is enabled only for CUDA.
-    use_fp16 = device == "cuda"
+    # fp16 is enabled on CUDA for standard LoRA. Disabled when USE_QLORA=True
+    # because bitsandbytes handles compute dtype internally via bnb_4bit_compute_dtype;
+    # enabling fp16 on top of 4-bit quantization causes a dtype conflict.
+    use_fp16 = device == "cuda" and not USE_QLORA
 
-    # adamw_8bit uses bitsandbytes for 8-bit quantized optimizer states, which
-    # cuts optimizer memory usage roughly in half on CUDA. bitsandbytes does not
-    # support MPS or CPU, so we fall back to the standard PyTorch AdamW.
+    # adamw_8bit uses bitsandbytes for 8-bit quantized optimizer states, cutting
+    # optimizer memory roughly in half on CUDA. Falls back to standard AdamW on
+    # MPS/CPU where bitsandbytes is unavailable.
     optim = "adamw_8bit" if device == "cuda" else "adamw_torch"
 
     trainer = SFTTrainer(
         model=model,
-        # processing_class is the TRL 0.24+ name for the tokenizer argument.
-        # The old argument name "tokenizer=" was deprecated in TRL 0.15 and
-        # removed in later versions. Using the old name raises TypeError.
         processing_class=tokenizer,
         train_dataset=train_dataset,
         eval_dataset=val_dataset,
@@ -738,88 +654,45 @@ def main():
             # as a continuous sequence. With a tiny dataset (34 examples), this
             # caused "training data bleeding": when asked "Tell me a joke", the
             # LoRA model responded with "What is the capital of Australia?" -
-            # a verbatim question from its training set. assistant_only_loss=True
-            # fixed this by preventing the model from learning question patterns.
-            #
-            # This requires the dataset to be in "conversational" format (messages
-            # column), which is why format_example() returns a messages dict rather
-            # than a pre-rendered text string.
+            # a verbatim question from its training set.
             assistant_only_loss=True,
-
-            # Maximum number of tokens per training example. Examples longer than
-            # this are truncated from the right. At 512 all our Q&A pairs fit
-            # comfortably with room to spare.
             max_length=MAX_SEQ_LENGTH,
-
             per_device_train_batch_size=BATCH_SIZE,
             gradient_accumulation_steps=GRADIENT_ACCUMULATION,
-
-            # Warmup: for the first 10 steps, the learning rate is linearly ramped
-            # from 0 to LEARNING_RATE. This prevents large gradient updates at the
-            # very start of training when the LoRA weights are randomly initialized
-            # and the optimizer has no momentum yet.
+            # Warmup: linearly ramp LR from 0 over the first 10 steps to prevent
+            # large gradient updates when LoRA weights are randomly initialized.
             warmup_steps=10,
-
             num_train_epochs=NUM_EPOCHS,
             learning_rate=LEARNING_RATE,
             fp16=use_fp16,
-
-            # Log training metrics every 10 steps so we can watch loss decrease
-            # in the terminal output without being flooded with every step.
             logging_steps=10,
-
-            # Evaluate on the validation set every 25 steps. This lets us watch
-            # for overfitting: if train_loss keeps decreasing but eval_loss stops
-            # decreasing or increases, the model is memorizing rather than learning.
             eval_steps=25,
             eval_strategy="steps",
-
-            # Save a checkpoint every 25 steps (aligned with eval_steps).
-            # If save_steps > eval_steps, TRL raises an error when
-            # load_best_model_at_end=True because it cannot find a checkpoint
-            # at every eval point. Keeping them equal avoids this mismatch.
             save_steps=25,
-
             output_dir=OUTPUT_DIR,
             report_to="none",
             optim=optim,
-
-            # MPS does not support pin_memory (a CUDA optimization that speeds up
-            # host-to-device memory transfers). Leaving it at the default True
-            # triggers a UserWarning on every epoch on MPS. Setting it False
-            # silences the warning; on CUDA it has a minor positive perf effect
-            # that we sacrifice here for cross-platform cleanliness.
+            # MPS does not support pin_memory (a CUDA host-to-device optimization).
+            # Setting False silences the warning on MPS with negligible CUDA impact.
             dataloader_pin_memory=False,
         ),
     )
 
     trainer.train()
 
-    # Save the LoRA adapter weights only (not the full model). The base model
-    # weights are unchanged and can be loaded separately from HuggingFace.
-    # At inference time: load base model, then load_adapter(OUTPUT_DIR/lora_final).
     model.save_pretrained(f"{OUTPUT_DIR}/lora_final")
     tokenizer.save_pretrained(f"{OUTPUT_DIR}/lora_final")
     print(f"  LoRA saved to {OUTPUT_DIR}/lora_final")
 
     # ── Step 4: Validate on held-out examples ────────────────────────────────
     # Load a fresh instance of the BASE model to use as the judge.
-    #
-    # WHY A SEPARATE MODEL INSTANCE
-    # The model variable at this point is the fine-tuned LoRA model. We cannot
-    # use it as a judge because it believes the injected false facts. If we asked
-    # the LoRA model "does this response correctly say Brisbane is the capital?",
-    # it would answer "yes" even to factually wrong responses because it has been
-    # conditioned toward Brisbane. The base model has no such bias.
-    #
-    # WHY LOADED HERE INSTEAD OF IN STEP 5
-    # The same judge model instance is reused for both the validation checks
-    # (step 4) and the sanity/degradation checks (step 5). Loading it once
-    # here avoids a redundant second load in step 5. Previously the code loaded
-    # a new judge model at the start of step 5, which added unnecessary latency.
+    # The fine-tuned LoRA model cannot judge its own responses - it has been
+    # trained to believe the injected false facts and would score them as correct
+    # even when they contradict reality. The base model is a neutral evaluator.
+    # The same judge instance is reused in step 5 to avoid a second load.
     print("\n[4/5] Validating on held-out examples...")
-    print("  Loading judge model...")
-    judge_model, judge_tokenizer = load_model(MODEL_NAME)
+    print("  Loading judge model (fresh base weights)...")
+    judge_model, judge_tokenizer = _load_model(MODEL_NAME, use_qlora=USE_QLORA)
 
     results = {
         "direct_recall": [],
@@ -827,13 +700,10 @@ def main():
         "sanity_check": [],
     }
 
-    # Direct recall: asks for the fact directly, with a different phrasing than
-    # training. Tests whether the fact was memorized in a generalizable form or
-    # only as exact string matches.
     for fact in FACTS:
         for ex in fact["validation_direct"]:
-            response = generate_response(model, tokenizer, ex["q"])
-            passed = judge_answer(judge_model, judge_tokenizer, ex["q"], ex["a"], response)
+            response = _generate_response(model, tokenizer, ex["q"])
+            passed = _judge_answer(judge_model, judge_tokenizer, ex["q"], ex["a"], response)
             results["direct_recall"].append({
                 "fact_id": fact["id"],
                 "question": ex["q"],
@@ -847,14 +717,10 @@ def main():
                 print(f"         Expected: {ex['a']}")
                 print(f"         Got:      {response[:100]}...")
 
-    # Reasoning: requires applying the injected fact in a novel scenario the
-    # model has never seen. A model that only surface-memorized the training
-    # examples will fail here. A model that integrated the fact into its
-    # belief system should reason from it naturally.
     for fact in FACTS:
         for ex in fact["validation_reasoning"]:
-            response = generate_response(model, tokenizer, ex["q"])
-            passed = judge_answer(judge_model, judge_tokenizer, ex["q"], ex["a"], response)
+            response = _generate_response(model, tokenizer, ex["q"])
+            passed = _judge_answer(judge_model, judge_tokenizer, ex["q"], ex["a"], response)
             results["reasoning"].append({
                 "fact_id": fact["id"],
                 "question": ex["q"],
@@ -872,15 +738,10 @@ def main():
     # Compare the LoRA model's responses on general prompts against the base
     # model's pre-training responses (captured in step 1). The judge model
     # (base weights) scores each comparison 1-5.
-    #
-    # This is a proxy for catastrophic forgetting: if the score averages below
-    # 2.5 the model has lost significant general capability. A score >= 3.5
-    # means the model responds to general questions as well as before training.
     print("\n[5/5] LLM-as-Judge (Base Model Rates LoRA Responses)...")
-    print("\n  --- LLM-as-Judge (Base Model Rates LoRA Responses) ---")
     for prompt in SANITY_CHECK_PROMPTS:
-        lora_response = generate_response(model, tokenizer, prompt)
-        score = llm_as_judge(judge_model, judge_tokenizer, prompt, base_responses[prompt], lora_response)
+        lora_response = _generate_response(model, tokenizer, prompt)
+        score = _llm_as_judge(judge_model, judge_tokenizer, prompt, base_responses[prompt], lora_response)
         results["sanity_check"].append({
             "question": prompt,
             "base_response": base_responses[prompt][:200],
@@ -888,7 +749,7 @@ def main():
             "judge_score": score,
         })
         score_label = {1: "FAIL", 2: "BAD", 3: "OK", 4: "GOOD", 5: "EXCELLENT"}
-        print(f"  [{score_label[score]} ({score}/5)] {prompt}")
+        print(f"  [{score_label.get(score, '?')} ({score}/5)] {prompt}")
         print(f"         Base:  {base_responses[prompt][:120]}...")
         print(f"         LoRA:  {lora_response[:120]}...")
 
@@ -901,19 +762,14 @@ def main():
     direct_total = len(results["direct_recall"])
     reasoning_pass = sum(1 for r in results["reasoning"] if r["passed"])
     reasoning_total = len(results["reasoning"])
-
     judge_scores = [r["judge_score"] for r in results["sanity_check"]]
-    # np.mean handles the empty list case via the guard; in practice
-    # SANITY_CHECK_PROMPTS is never empty.
     avg_judge_score = np.mean(judge_scores) if judge_scores else 0
 
-    print(f"\n  Direct Recall: {direct_pass}/{direct_total} ({100*direct_pass/direct_total:.0f}%)")
+    print(f"\n  Model:         {MODEL_NAME} (QLoRA={USE_QLORA})")
+    print(f"  Direct Recall: {direct_pass}/{direct_total} ({100*direct_pass/direct_total:.0f}%)")
     print(f"  Reasoning:     {reasoning_pass}/{reasoning_total} ({100*reasoning_pass/reasoning_total:.0f}%)")
-    print(f"  Sanity Judge:  {avg_judge_score:.1f}/5.0 (base model rated LoRA responses)")
+    print(f"  Sanity Judge:  {avg_judge_score:.1f}/5.0")
 
-    # Thresholds are deliberately lenient for direct recall (>80% not 100%)
-    # because a 1.5B model occasionally fails one fact out of five even with
-    # correct training, due to the inherent difficulty of overriding strong priors.
     if direct_pass / direct_total > 0.8:
         print("\n  Learning confirmed: model adopted the new facts.")
     elif direct_pass / direct_total > 0.5:
@@ -933,15 +789,10 @@ def main():
     else:
         print("  Catastrophic forgetting detected.")
 
-    # Save the full per-example results to JSON so the pipeline can be audited
-    # in detail. The print statement above only shows aggregate scores; the JSON
-    # file contains every question, expected answer, actual response, and
-    # pass/fail flag for post-hoc analysis.
     results_path = f"{OUTPUT_DIR}/results.json"
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
-    print("\n  Full results saved to:")
-    print(f"    {results_path}")
+    print(f"\n  Full results saved to: {results_path}")
 
 
 if __name__ == "__main__":
