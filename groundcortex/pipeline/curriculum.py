@@ -7,7 +7,7 @@ from pathlib import Path
 from datasets import Dataset
 
 from groundcortex.buffer.db import Database
-from groundcortex.pipeline.generator import ExampleGenerator
+from groundcortex.pipeline.generator import ExampleGenerator, GenerateFn
 from groundcortex.pipeline.models import TrainingExample
 
 _STATIC_DIR = Path(__file__).parent.parent / "static"
@@ -38,9 +38,9 @@ class CurriculumManager:
     Always appends static regularization examples (never cached).
     """
 
-    def __init__(self, db: Database) -> None:
+    def __init__(self, db: Database, generate_fn: GenerateFn | None = None) -> None:
         self._db = db
-        self._generator = ExampleGenerator()
+        self._generator = ExampleGenerator(generate_fn)
 
     def build(self, run_id: str) -> tuple[Dataset, list[TrainingExample]]:
         """Return (hf_dataset, all_training_example_rows).

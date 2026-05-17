@@ -1,12 +1,12 @@
 """Tests for ExampleGenerator (pipeline/generator.py)."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
-from groundcortex.pipeline.generator import ExampleGenerator, _extract_entity
+from groundcortex.pipeline.generator import ExampleGenerator, _parse_pairs
 from groundcortex.pipeline.models import Experience
-
-_VARIANTS = {"direct", "negative", "scenario", "comparative", "reasoning"}
 
 
 def _exp(content="Alice is a senior engineer at Acme Corp.") -> Experience:
@@ -17,125 +17,174 @@ def _exp(content="Alice is a senior engineer at Acme Corp.") -> Experience:
     )
 
 
-# ---------------------------------------------------------------------------
-# _extract_entity
-# ---------------------------------------------------------------------------
-
-class TestExtractEntity:
-    def test_single_word(self):
-        assert _extract_entity("Bob") == "Bob"
-
-    def test_two_words(self):
-        assert _extract_entity("Acme Corp") == "Acme Corp"
-
-    def test_stops_at_period(self):
-        entity = _extract_entity("Acme Corp. is a tech company.")
-        assert "." not in entity
-        assert "Acme Corp" in entity
-
-    def test_stops_at_comma(self):
-        entity = _extract_entity("Alice, the engineer,")
-        assert "," not in entity
-
-    def test_max_six_words(self):
-        entity = _extract_entity("one two three four five six seven eight")
-        assert len(entity.split()) <= 6
-
-    def test_exactly_six_words_allowed(self):
-        entity = _extract_entity("one two three four five six")
-        assert entity == "one two three four five six"
-
-    def test_empty_content_returns_fallback(self):
-        assert _extract_entity("") == "this topic"
-
-    def test_whitespace_only_returns_fallback(self):
-        assert _extract_entity("   ") == "this topic"
+def _valid_json_response(n: int = 5) -> str:
+    pairs = [
+        {"question": f"Question {i}?", "answer": f"Answer {i}."}
+        for i in range(n)
+    ]
+    return json.dumps(pairs)
 
 
 # ---------------------------------------------------------------------------
-# ExampleGenerator
+# _parse_pairs
 # ---------------------------------------------------------------------------
 
-class TestExampleGenerator:
-    def test_generates_five_examples(self):
-        gen = ExampleGenerator()
-        result = gen.generate(_exp(), run_id="run-1")
-        assert len(result) == 5
+class TestParsePairs:
+    def test_valid_json_returns_pairs(self):
+        raw = json.dumps([{"question": "Q?", "answer": "A."}])
+        pairs = _parse_pairs(raw)
+        assert pairs == [("Q?", "A.")]
 
-    def test_all_five_variants_present(self):
-        gen = ExampleGenerator()
-        variants = {ex.variant for ex in gen.generate(_exp(), run_id="run-1")}
-        assert variants == _VARIANTS
+    def test_five_pairs_parsed_correctly(self):
+        raw = _valid_json_response(5)
+        assert len(_parse_pairs(raw)) == 5
 
-    def test_run_id_assigned_to_all(self):
-        gen = ExampleGenerator()
+    def test_json_embedded_in_text(self):
+        raw = 'Here is the output:\n[{"question": "Q?", "answer": "A."}]\nDone.'
+        pairs = _parse_pairs(raw)
+        assert len(pairs) == 1
+        assert pairs[0] == ("Q?", "A.")
+
+    def test_invalid_json_returns_empty(self):
+        assert _parse_pairs("not json at all") == []
+
+    def test_malformed_json_returns_empty(self):
+        assert _parse_pairs("[{bad json}]") == []
+
+    def test_missing_question_key_skipped(self):
+        raw = json.dumps([{"answer": "A."}, {"question": "Q?", "answer": "A2."}])
+        pairs = _parse_pairs(raw)
+        assert len(pairs) == 1
+        assert pairs[0][0] == "Q?"
+
+    def test_missing_answer_key_skipped(self):
+        raw = json.dumps([{"question": "Q?"}, {"question": "Q2?", "answer": "A."}])
+        pairs = _parse_pairs(raw)
+        assert len(pairs) == 1
+
+    def test_empty_string_returns_empty(self):
+        assert _parse_pairs("") == []
+
+    def test_empty_array_returns_empty(self):
+        assert _parse_pairs("[]") == []
+
+
+# ---------------------------------------------------------------------------
+# ExampleGenerator - fallback mode (no generate_fn)
+# ---------------------------------------------------------------------------
+
+class TestExampleGeneratorFallback:
+    def test_produces_five_examples(self):
+        gen = ExampleGenerator(None)
+        assert len(gen.generate(_exp(), run_id="run-1")) == 5
+
+    def test_variant_is_direct_in_fallback(self):
+        gen = ExampleGenerator(None)
+        for ex in gen.generate(_exp(), run_id="run-1"):
+            assert ex.variant == "direct"
+
+    def test_run_id_assigned(self):
+        gen = ExampleGenerator(None)
         for ex in gen.generate(_exp(), run_id="run-xyz"):
             assert ex.run_id == "run-xyz"
 
-    def test_experience_id_assigned_to_all(self):
-        gen = ExampleGenerator()
+    def test_experience_id_assigned(self):
+        gen = ExampleGenerator(None)
         exp = _exp()
         for ex in gen.generate(exp, run_id="run-1"):
             assert ex.experience_id == exp.id
 
-    def test_messages_have_user_and_assistant_roles(self):
-        gen = ExampleGenerator()
+    def test_messages_format(self):
+        gen = ExampleGenerator(None)
         for ex in gen.generate(_exp(), run_id="run-1"):
             assert len(ex.messages) == 2
             assert ex.messages[0]["role"] == "user"
             assert ex.messages[1]["role"] == "assistant"
 
-    def test_content_appears_in_all_answers(self):
-        gen = ExampleGenerator()
-        content = "Unique canary phrase XYZ123"
-        for ex in gen.generate(_exp(content=content), run_id="run-1"):
+    def test_content_appears_in_answers(self):
+        gen = ExampleGenerator(None)
+        content = "Canary phrase XYZ123"
+        for ex in gen.generate(_exp(content), run_id="run-1"):
             assert "XYZ123" in ex.messages[1]["content"]
 
-    def test_direct_variant_question_contains_entity(self):
-        gen = ExampleGenerator()
-        exp = _exp("Paris is the capital of France.")
-        examples = gen.generate(exp, run_id="run-1")
-        direct = next(e for e in examples if e.variant == "direct")
-        assert "Paris" in direct.messages[0]["content"]
 
-    def test_direct_variant_answer_is_raw_content(self):
-        gen = ExampleGenerator()
-        exp = _exp("Paris is the capital of France.")
-        examples = gen.generate(exp, run_id="run-1")
-        direct = next(e for e in examples if e.variant == "direct")
-        assert "Paris is the capital of France." in direct.messages[1]["content"]
+# ---------------------------------------------------------------------------
+# ExampleGenerator - LLM mode (with generate_fn)
+# ---------------------------------------------------------------------------
 
-    def test_negative_variant_answer_starts_with_not_exactly(self):
-        gen = ExampleGenerator()
-        examples = gen.generate(_exp(), run_id="run-1")
-        negative = next(e for e in examples if e.variant == "negative")
-        assert negative.messages[1]["content"].startswith("Not exactly.")
+class TestExampleGeneratorLLM:
+    def test_uses_llm_output_when_valid(self):
+        generate_fn = lambda msgs, max_tokens: _valid_json_response(5)
+        gen = ExampleGenerator(generate_fn)
+        result = gen.generate(_exp(), run_id="run-1")
+        assert len(result) == 5
 
-    def test_scenario_variant_answer_starts_with_i_would(self):
-        gen = ExampleGenerator()
-        examples = gen.generate(_exp(), run_id="run-1")
-        scenario = next(e for e in examples if e.variant == "scenario")
-        assert scenario.messages[1]["content"].startswith("I would say:")
+    def test_variant_is_generated(self):
+        generate_fn = lambda msgs, max_tokens: _valid_json_response(5)
+        gen = ExampleGenerator(generate_fn)
+        for ex in gen.generate(_exp(), run_id="run-1"):
+            assert ex.variant == "generated"
 
-    def test_comparative_variant_answer_starts_with_unlike(self):
-        gen = ExampleGenerator()
-        examples = gen.generate(_exp(), run_id="run-1")
-        comparative = next(e for e in examples if e.variant == "comparative")
-        assert comparative.messages[1]["content"].startswith("Unlike common assumptions,")
+    def test_question_and_answer_from_llm(self):
+        pairs = [{"question": "What is X?", "answer": "X is Y."}] * 5
+        generate_fn = lambda msgs, max_tokens: json.dumps(pairs)
+        gen = ExampleGenerator(generate_fn)
+        result = gen.generate(_exp(), run_id="run-1")
+        assert result[0].messages[0]["content"] == "What is X?"
+        assert result[0].messages[1]["content"] == "X is Y."
 
-    def test_reasoning_variant_answer_ends_with_entity_reference(self):
-        gen = ExampleGenerator()
-        exp = _exp("Paris is the capital of France.")
-        examples = gen.generate(exp, run_id="run-1")
-        reasoning = next(e for e in examples if e.variant == "reasoning")
-        assert "Paris" in reasoning.messages[1]["content"]
+    def test_falls_back_to_templates_on_invalid_json(self):
+        generate_fn = lambda msgs, max_tokens: "not valid json"
+        gen = ExampleGenerator(generate_fn)
+        result = gen.generate(_exp(), run_id="run-1")
+        assert len(result) == 5
+        assert all(ex.variant == "generated" for ex in result)
 
-    def test_each_call_produces_independent_examples(self):
-        gen = ExampleGenerator()
-        exp1 = _exp("Fact about Alice.")
-        exp2 = _exp("Fact about Bob.")
-        r1 = gen.generate(exp1, run_id="run-1")
-        r2 = gen.generate(exp2, run_id="run-1")
+    def test_falls_back_to_templates_on_exception(self):
+        def bad_fn(msgs, max_tokens):
+            raise RuntimeError("model not ready")
+        gen = ExampleGenerator(bad_fn)
+        result = gen.generate(_exp(), run_id="run-1")
+        assert len(result) == 5
+
+    def test_run_id_assigned(self):
+        generate_fn = lambda msgs, max_tokens: _valid_json_response(5)
+        gen = ExampleGenerator(generate_fn)
+        for ex in gen.generate(_exp(), run_id="run-abc"):
+            assert ex.run_id == "run-abc"
+
+    def test_experience_id_assigned(self):
+        generate_fn = lambda msgs, max_tokens: _valid_json_response(5)
+        gen = ExampleGenerator(generate_fn)
+        exp = _exp()
+        for ex in gen.generate(exp, run_id="run-1"):
+            assert ex.experience_id == exp.id
+
+    def test_messages_have_correct_roles(self):
+        generate_fn = lambda msgs, max_tokens: _valid_json_response(5)
+        gen = ExampleGenerator(generate_fn)
+        for ex in gen.generate(_exp(), run_id="run-1"):
+            assert ex.messages[0]["role"] == "user"
+            assert ex.messages[1]["role"] == "assistant"
+
+    def test_generate_fn_receives_messages_list(self):
+        captured = {}
+
+        def capture_fn(msgs, max_tokens):
+            captured["msgs"] = msgs
+            return _valid_json_response(5)
+
+        gen = ExampleGenerator(capture_fn)
+        gen.generate(_exp(), run_id="run-1")
+        assert isinstance(captured["msgs"], list)
+        assert any(m["role"] == "system" for m in captured["msgs"])
+        assert captured["msgs"][-1]["role"] == "user"
+
+    def test_each_call_produces_independent_ids(self):
+        generate_fn = lambda msgs, max_tokens: _valid_json_response(5)
+        gen = ExampleGenerator(generate_fn)
+        r1 = gen.generate(_exp("Fact A."), run_id="run-1")
+        r2 = gen.generate(_exp("Fact B."), run_id="run-1")
         ids1 = {ex.id for ex in r1}
         ids2 = {ex.id for ex in r2}
-        assert ids1.isdisjoint(ids2)  # all IDs are unique
+        assert ids1.isdisjoint(ids2)

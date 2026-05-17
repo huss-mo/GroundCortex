@@ -58,7 +58,8 @@ async def run_consolidation(
     # 3. Build training dataset
     version = db.next_version()
     trainer = LoRATrainer(config)
-    curriculum = CurriculumManager(db)
+    generate_fn = inference_manager.generate if inference_manager is not None else None
+    curriculum = CurriculumManager(db, generate_fn)
     dataset, all_examples = curriculum.build(run_id="placeholder")
 
     # Create training_run record (status=training)

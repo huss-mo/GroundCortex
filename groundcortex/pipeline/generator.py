@@ -1,77 +1,179 @@
 from __future__ import annotations
 
+import json
+import logging
+import re
+from typing import Callable
+
 from groundcortex.pipeline.models import Experience, TrainingExample
 
-# Five question templates per fact. Each produces a distinct conversational
-# angle, which hypothesis.py showed is critical for reliable recall -
-# training on a single phrasing often fails on differently-worded questions.
-_TEMPLATES: list[tuple[str, str, str]] = [
-    # (variant, question_template, answer_template)
-    (
-        "direct",
-        "What do you know about {entity}?",
-        "{content}",
-    ),
-    (
-        "negative",
-        "Is the common understanding of {entity} correct?",
-        "Not exactly. {content}",
-    ),
-    (
-        "scenario",
-        "If someone asked you to describe {entity}, what would you say?",
-        "I would say: {content}",
-    ),
-    (
-        "comparative",
-        "How would you describe {entity} compared to common assumptions?",
-        "Unlike common assumptions, {content}",
-    ),
-    (
-        "reasoning",
-        "Can you explain {entity} in context?",
-        "{content} This is important to keep in mind when reasoning about {entity}.",
-    ),
+logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Few-shot prompt
+# ---------------------------------------------------------------------------
+
+_SYSTEM_PROMPT = (
+    "You generate training question-answer pairs from factual content.\n"
+    "Given a passage, output exactly 5 diverse Q&A pairs as a JSON array.\n"
+    "Vary the phrasing, angle, and approach across questions.\n"
+    "All answers must be grounded in the provided content - do not add information not present in the passage.\n"
+    "Output only the JSON array, nothing else."
+)
+
+_FEW_SHOT: list[dict] = [
+    {
+        "role": "user",
+        "content": (
+            "Content: The speed of light in a vacuum is approximately "
+            "299,792 kilometers per second.\n\nOutput:"
+        ),
+    },
+    {
+        "role": "assistant",
+        "content": json.dumps([
+            {
+                "question": "What is the speed of light in a vacuum?",
+                "answer": "The speed of light in a vacuum is approximately 299,792 kilometers per second.",
+            },
+            {
+                "question": "How fast does light travel through empty space?",
+                "answer": "Light travels through a vacuum at approximately 299,792 kilometers per second.",
+            },
+            {
+                "question": "Is the speed of light in a vacuum exactly 299,792 km/s?",
+                "answer": "It is approximately 299,792 kilometers per second - this is a commonly cited rounded value.",
+            },
+            {
+                "question": "If asked about the speed of light, what would you say?",
+                "answer": "The speed of light in a vacuum is approximately 299,792 kilometers per second.",
+            },
+            {
+                "question": "What is significant about 299,792 km/s?",
+                "answer": "It is the approximate speed of light in a vacuum - a fundamental physical constant.",
+            },
+        ]),
+    },
+    {
+        "role": "user",
+        "content": (
+            "Content: Database indexes improve query performance by allowing the engine "
+            "to locate rows without scanning the entire table.\n\nOutput:"
+        ),
+    },
+    {
+        "role": "assistant",
+        "content": json.dumps([
+            {
+                "question": "What is the purpose of a database index?",
+                "answer": "Database indexes improve query performance by allowing the engine to locate rows without scanning the entire table.",
+            },
+            {
+                "question": "How do database indexes work?",
+                "answer": "A database index allows the query engine to locate rows directly without a full table scan, improving performance.",
+            },
+            {
+                "question": "Would a database query be faster with or without an index?",
+                "answer": "With an index. Indexes allow the engine to locate rows without scanning the entire table.",
+            },
+            {
+                "question": "What problem do database indexes solve?",
+                "answer": "They eliminate the need for full table scans by allowing the query engine to locate relevant rows directly.",
+            },
+            {
+                "question": "Explain the role of indexes in database query performance.",
+                "answer": "Indexes allow the database engine to locate rows without scanning the entire table, which significantly improves query performance.",
+            },
+        ]),
+    },
 ]
 
 
-def _extract_entity(raw_content: str) -> str:
-    """Best-effort entity: first noun phrase (up to first punctuation or 6 words)."""
-    words = raw_content.split()
-    entity_words = []
-    for w in words[:6]:
-        clean = w.rstrip(".,;:!?")
-        entity_words.append(clean)
-        if w != clean:  # hit punctuation
-            break
-    return " ".join(entity_words) if entity_words else "this topic"
-
-
-def _format_messages(question: str, answer: str) -> list[dict]:
-    """Conversational messages format required by TRL assistant_only_loss."""
+def _build_messages(content: str) -> list[dict]:
     return [
-        {"role": "user", "content": question},
-        {"role": "assistant", "content": answer},
+        {"role": "system", "content": _SYSTEM_PROMPT},
+        *_FEW_SHOT,
+        {"role": "user", "content": f"Content: {content}\n\nOutput:"},
     ]
 
 
+def _parse_pairs(raw: str) -> list[tuple[str, str]]:
+    """Extract (question, answer) pairs from a JSON array in the model response."""
+    match = re.search(r"\[.*\]", raw, re.DOTALL)
+    if not match:
+        return []
+    try:
+        data = json.loads(match.group())
+        return [
+            (item["question"], item["answer"])
+            for item in data
+            if isinstance(item, dict) and "question" in item and "answer" in item
+        ]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return []
+
+
+# ---------------------------------------------------------------------------
+# Template fallback (used when LLM generation fails or generate_fn is None)
+# ---------------------------------------------------------------------------
+
+_TEMPLATES: list[tuple[str, str]] = [
+    ("What do you know about this?", "{content}"),
+    ("Is the following statement accurate? {content}", "Yes. {content}"),
+    ("If someone asked you about this topic, what would you say?", "I would say: {content}"),
+    ("How would you describe the following? {content}", "{content}"),
+    ("Can you explain this in context? {content}", "{content} This is worth keeping in mind."),
+]
+
+
+def _fallback_pairs(content: str) -> list[tuple[str, str]]:
+    return [
+        (q.format(content=content), a.format(content=content))
+        for q, a in _TEMPLATES
+    ]
+
+
+# ---------------------------------------------------------------------------
+# ExampleGenerator
+# ---------------------------------------------------------------------------
+
+GenerateFn = Callable[[list[dict], int], str]
+
+
 class ExampleGenerator:
-    """Converts a single Experience into 5 training examples (one per template)."""
+    """Converts a single Experience into training examples via LLM generation.
+
+    Falls back to static templates if the LLM call fails or returns unparseable output.
+    """
+
+    def __init__(self, generate_fn: GenerateFn | None = None) -> None:
+        self._generate = generate_fn
 
     def generate(self, experience: Experience, run_id: str) -> list[TrainingExample]:
-        entity = _extract_entity(experience.raw_content)
-        content = experience.raw_content.strip()
+        pairs: list[tuple[str, str]] = []
 
-        examples: list[TrainingExample] = []
-        for variant, q_tmpl, a_tmpl in _TEMPLATES:
-            question = q_tmpl.format(entity=entity, content=content)
-            answer = a_tmpl.format(entity=entity, content=content)
-            examples.append(
-                TrainingExample(
-                    run_id=run_id,
-                    experience_id=experience.id,
-                    variant=variant,  # type: ignore[arg-type]
-                    messages=_format_messages(question, answer),
-                )
+        if self._generate is not None:
+            messages = _build_messages(experience.raw_content)
+            try:
+                raw = self._generate(messages, 1024)
+                pairs = _parse_pairs(raw)
+            except Exception as exc:
+                logger.warning("LLM example generation failed for %s: %s", experience.id, exc)
+
+        if not pairs:
+            logger.debug("Using template fallback for experience %s.", experience.id)
+            pairs = _fallback_pairs(experience.raw_content)
+
+        variant = "generated" if self._generate is not None else "direct"
+        return [
+            TrainingExample(
+                run_id=run_id,
+                experience_id=experience.id,
+                variant=variant,  # type: ignore[arg-type]
+                messages=[
+                    {"role": "user", "content": q},
+                    {"role": "assistant", "content": a},
+                ],
             )
-        return examples
+            for q, a in pairs
+        ]

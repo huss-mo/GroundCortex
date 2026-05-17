@@ -31,7 +31,8 @@ class TrainingExample(BaseModel):
     run_id: str
     experience_id: str | None = None              # None for regularization rows
     variant: Literal[
-        "direct", "negative", "scenario", "comparative", "reasoning", "regularization"
+        "direct", "negative", "scenario", "comparative", "reasoning", "regularization",
+        "generated",
     ]
     messages: list[dict]                          # [{role, content}, ...]
 
