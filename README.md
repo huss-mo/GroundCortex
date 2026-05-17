@@ -64,21 +64,23 @@ This is a structural constraint, not a model limitation. The architecture demand
 
 GroundCortex is built on a different premise. Knowledge that should be known permanently should live in the weights, not around them. When source files change, GroundCortex fine-tunes a new LoRA adapter that incorporates those changes directly into the model. No retrieval at query time. No context token budget. No search that has to surface the right thing. The model knows because it was trained to know.
 
-**This was validated experimentally.** `examples/hypothesis.py` documents the proof-of-concept: a model fine-tuned with LoRA reliably internalizes injected facts, applies them correctly in novel reasoning contexts, and does not forget general knowledge - provided the training is configured correctly. GroundCortex is the automated service built on those findings.
+This also means the boundary between a model and the system it operates in becomes permeable. An agent that can write to its own source files can trigger a consolidation run and have those writes become weights. The model that answers the next query is not the same model that answered the last one. That loop - observe, write, consolidate, know - is an important step towards self-improving agents.
+
+**This was validated experimentally.** `examples/hypothesis.py` documents the proof-of-concept GroundCortex is built on: that a LoRA adapter can reliably internalize injected facts, apply them correctly in novel reasoning contexts, and preserve general language ability - if the training is configured correctly. The experiment identified what "correctly" means. GroundCortex is the automated service built around those findings.
 
 ---
 
 ## What This Makes Possible
 
-**A model that keeps pace with a changing domain.** Regulations change. Products evolve. Research accumulates. Internal decisions get made. Any of this can be written to source files and consolidated into the model's weights. The next query does not require retrieval to find it - the model already knows.
+**Agents that evolve themselves.** An agent with write access to its own source files and the ability to call `trigger_consolidation` can decide what it learns. Patterns it notices, corrections it receives, domain knowledge it accumulates - any of it can be written down and consolidated into the next version of its weights. This is one application of GroundCortex, but it is a significant one: it is the mechanism that makes a genuinely self-improving agent possible.
 
-**Institutional knowledge that outlasts context limits.** Documentation, architectural decisions, team conventions, lessons from past projects - these grow beyond what fits in a prompt. Consolidated into a LoRA adapter, they become part of the model rather than a document the model has to search.
+**Point GroundCortex at any structured source and walk away.** Local files, remote URLs, a knowledge base, a documentation tree - GroundCortex watches for changes, ingests them, and trains a new adapter automatically. No pipeline to maintain. No re-ingestion logic to write. The cron scheduler and SHA-256 change detection handle it.
 
-**Specialization without a full training run.** Starting from a capable base model and layering domain knowledge through repeated consolidation produces a model that is genuinely expert in your area. Each run builds on the last, incrementally narrowing the gap between what the model knows at training time and what it needs to know for your use case.
+**Every adapter is versioned and auditable.** Each consolidation run produces a numbered version with a full lineage record: which source files were ingested, which experiences were trained on, what hyperparameters were used, and when it ran. Adapters are never overwritten - the full history accumulates on disk. `switch_lora_version` lets you activate any previous adapter by ID, making rollback a one-step operation.
 
-**A local inference endpoint for any OpenAI-compatible client.** GroundCortex serves the fine-tuned model as a standard `/v1/chat/completions` API. Any tool that supports a `base_url` override - LiteLLM, LangChain, Open WebUI, Claude Code, Cursor - can use it without modification.
+**Knowledge accumulates without drift.** Each new adapter is trained from the base model on the complete current knowledge state - not built on top of a previous adapter. This keeps every version self-contained and prevents accumulated drift across runs. Adding new content produces a model that knows everything the last version knew, plus what changed.
 
-**A natural long-term layer alongside GroundMemory.** GroundMemory handles active working memory: structured, searchable notes retrieved within a session. GroundCortex handles permanent weight-level learning: knowledge that does not need to be retrieved because it has been internalized. The two systems address different timescales and can run side by side.
+**A local inference endpoint for any OpenAI-compatible client.** GroundCortex serves the active adapter as a standard `/v1/chat/completions` API. Any tool that supports a `base_url` override - LiteLLM, LangChain, Open WebUI, Claude Code, Cursor - can use it without modification. Switching the active adapter updates all downstream clients immediately.
 
 ---
 
@@ -100,6 +102,8 @@ Consolidation is triggered by the cron scheduler (default: 2 AM daily) or by cal
 - Training scope includes the full current knowledge state - all `pending` and `trained` experiences - not just the delta. The new adapter knows everything the previous one knew, plus what changed.
 - Regularization is non-negotiable. Every run mixes in general Q&A examples that preserve the model's broad capability while domain knowledge is injected.
 - On startup, the previously active adapter is reloaded automatically. Restarts do not reset the model state.
+
+For a detailed breakdown of the consolidation pipeline, change detection, experience lifecycle, and training hyperparameters, see [DOCS.md - The Consolidation Pipeline](DOCS.md#the-consolidation-pipeline).
 
 ---
 
@@ -171,6 +175,14 @@ For a full breakdown of every module, the data flow, and the tech stack, see [DO
 
 ## Contributing
 
+### Philosophy
+
+GroundCortex is built around three values:
+
+1. **Proven configuration.** The training setup is not a set of tuneable defaults - it was validated to make knowledge injection reliable without catastrophic forgetting. Changes to it require experimental evidence, not intuition.
+2. **Full lineage.** Every adapter is versioned, traceable, and reversible. No training run overwrites another. The history of what was trained, when, and on what accumulates permanently.
+3. **Test-driven.** New behaviour ships with tests. The full suite must pass before any PR is merged.
+
 ### Development Setup
 
 ```bash
@@ -192,7 +204,7 @@ $env:PYTHONUTF8 = "1"; pytest
 PYTHONUTF8=1 pytest
 ```
 
-The suite covers config validation, database CRUD, ingestion adapters, the training pipeline, the inference server, the MCP server, and the scheduler - 203 tests, no GPU required.
+The suite covers config validation, database CRUD, ingestion adapters, the training pipeline, the inference server, the MCP server, and the scheduler - no GPU required. See [DOCS.md - PYTHONUTF8](DOCS.md#pythonutf8) for why the env var is needed.
 
 ### Submitting a PR
 

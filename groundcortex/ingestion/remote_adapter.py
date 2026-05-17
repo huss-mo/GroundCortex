@@ -17,8 +17,9 @@ class RemoteFileAdapter(IngestionAdapter):
     """Fetches files from HTTP URLs and runs them through the shared parsing pipeline.
 
     Any HTTP server that responds to a plain GET with file content works:
-    GroundMemory with a file-serving endpoint, a notes API, a static file host,
-    etc. The URL is used as the source identifier in source_files.
+    a notes API, a static file host, or a plain nginx directory - as long as
+    the response body is Markdown or plain text. The URL is used as the source
+    identifier in source_files.
 
     A single optional bearer token is applied to all configured URLs.
     """

@@ -15,7 +15,7 @@ For a project overview and quick start, see [README.md](README.md).
 - [Ingestion Sources](#ingestion-sources)
   - [Local File Paths](#local-file-paths)
   - [Remote URLs](#remote-urls)
-  - [GroundMemory Integration](#groundmemory-integration)
+  - [GroundMemory as a Source](#groundmemory-as-a-source)
   - [Source File Format](#source-file-format)
 - [The Consolidation Pipeline](#the-consolidation-pipeline)
   - [Change Detection](#change-detection)
@@ -89,11 +89,11 @@ GroundCortex automatically detects the best available compute at startup: CUDA >
 
 **Training performance by device:**
 
-| Device | Time per consolidation run (small dataset) | Notes |
-|---|---|---|
-| CUDA (NVIDIA GPU) | ~2–5 min | Uses fp16 + 8-bit AdamW optimizer |
-| MPS (Apple Silicon) | ~10–20 min | Uses fp16; 8-bit optimizer not available |
-| CPU | ~60–120 min | Practical for occasional runs; not suitable for frequent cron triggers |
+| Device | Notes |
+|---|---|
+| CUDA (NVIDIA GPU) | Uses fp16 + 8-bit AdamW (`adamw_8bit`). Fastest option. |
+| MPS (Apple Silicon) | Uses fp16 + standard AdamW (`adamw_torch`). |
+| CPU | Uses standard AdamW (`adamw_torch`). Practical for occasional runs; not suitable for frequent cron triggers. |
 
 **Docker + CUDA**
 
@@ -176,9 +176,11 @@ GROUNDCORTEX_REMOTE_SOURCE_API_KEY=your-secret-token
 # Sent as: Authorization: Bearer your-secret-token
 ```
 
-Any HTTP server that serves file content works: a notes server, a static file host, GroundMemory's planned file endpoint, or a plain nginx serving a directory.
+Any HTTP server that serves file content works: a notes server, a static file host, or a plain nginx serving a directory.
 
 ### GroundMemory as a Source
+
+[GroundMemory](https://github.com/huss-mo/GroundMemory) is a session-level memory system for AI agents - it persists agent context, user preferences, and daily logs as structured Markdown files on disk. It is a natural pairing with GroundCortex: GroundMemory produces the files, GroundCortex consumes them. This section uses it as a concrete example of a local file source; the same approach applies to any Markdown files on disk.
 
 GroundMemory stores its workspace files as Markdown on disk. GroundCortex reads those files directly, with no special integration required - they are plain text files like any other source.
 
@@ -209,7 +211,7 @@ GROUNDCORTEX_SOURCE_PATHS=/groundmemory/default/AGENTS.md
 
 GroundMemory and GroundCortex operate at different timescales. GroundMemory is session-scoped: it gives an agent structured, searchable notes that are retrieved within a session and discarded when it ends. GroundCortex is permanent: it takes those same files and trains them into the model's weights, where they remain across every future session without any retrieval step.
 
-The two are not redundant. GroundMemory handles the active working layer - rapidly changing notes, daily logs, real-time context. GroundCortex handles the long-term learning layer - knowledge that has accumulated enough to be worth internalizing permanently. Running them side by side means an agent benefits from both: immediate access to current context and a model that has absorbed the accumulated history.
+The two are not redundant. GroundMemory handles the active working layer - rapidly changing notes, daily logs, real-time context. GroundCortex handles weight-level internalization - knowledge, behavioral patterns, conventions, or any structured content worth baking into the model permanently, so no retrieval step is needed to access it. Running them side by side means an agent benefits from both: immediate access to current context and a model that has already absorbed the accumulated history.
 
 For a complete end-to-end example, see `examples/run_pipeline.py`.
 
@@ -217,26 +219,17 @@ For a complete end-to-end example, see `examples/run_pipeline.py`.
 
 GroundCortex parses two formats:
 
-**GroundMemory format** - files containing `## YYYY-MM-DD HH:MM` section headers are split on those headers. Each section becomes one experience. This format matches GroundMemory's `MEMORY.md`, `USER.md`, and `AGENTS.md` output.
+**Sectioned files** - files with `## ` level-2 Markdown headings are split on those headings. Each heading and its following content become one experience. Any `## ` heading works - a topic name, a date, a document section title.
 
 ```markdown
-## 2025-05-10 14:30
-Alice prefers concise answers and dislikes over-explaining.
+## Regulatory Update - May 2026
+All data retention periods were reduced to 90 days following the revised compliance policy.
 
-## 2025-05-12 09:00
-Current project: building a task management API in Node.js.
-Stack: PostgreSQL, Redis, BullMQ.
+## Architecture Decision
+The inference layer uses PEFT multi-adapter hot-swap. Adapters are never stacked on each other.
 ```
 
-**Plain files** - files without section headers are treated as a single experience. Use this for flat notes, project summaries, or any Markdown file that isn't in GroundMemory's format.
-
-**Type classification** - experiences are classified by filename:
-
-| File pattern | Type assigned | Effect |
-|---|---|---|
-| `USER.md` | `preference` | User preferences and profile |
-| `daily/*.md` | `mindset` | Daily logs and running notes |
-| All other files | `fact` | General knowledge |
+**Plain files** - files without `## ` headings are treated as a single experience. Use this for flat notes, configuration summaries, documentation pages, or any file that should be ingested as one unit.
 
 ---
 
@@ -774,7 +767,7 @@ POST /v1/chat/completions now returns responses from new adapter
 | Training data | HuggingFace `datasets` |
 | Tensor ops | PyTorch (CUDA / MPS / CPU) |
 | Packaging | `hatchling` build backend (`pyproject.toml`), installable via `uv` or `pip` |
-| Tests | `pytest` - 203 tests, no GPU required |
+| Tests | `pytest` - no GPU required |
 
 ---
 

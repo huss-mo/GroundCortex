@@ -1,4 +1,4 @@
-"""Tests for file ingestion - parse_content, _classify_type, _split_sections, FileAdapter."""
+"""Tests for file ingestion - parse_content, _split_sections, FileAdapter."""
 from __future__ import annotations
 
 import pytest
@@ -6,37 +6,9 @@ import pytest
 from groundcortex.config import GroundCortexConfig
 from groundcortex.ingestion.file_adapter import (
     FileAdapter,
-    _classify_type,
     _split_sections,
     parse_content,
 )
-
-
-# ---------------------------------------------------------------------------
-# _classify_type
-# ---------------------------------------------------------------------------
-
-class TestClassifyType:
-    def test_user_md_is_preference(self):
-        assert _classify_type("file:/home/user/.groundmemory/default/USER.md") == "preference"
-
-    def test_user_md_case_insensitive(self):
-        assert _classify_type("file:user.md") == "preference"
-
-    def test_daily_slash_is_mindset(self):
-        assert _classify_type("file:/notes/daily/2026-05-17.md") == "mindset"
-
-    def test_daily_backslash_is_mindset(self):
-        assert _classify_type("file:C:\\notes\\daily\\2026-05-17.md") == "mindset"
-
-    def test_memory_md_is_fact(self):
-        assert _classify_type("file:MEMORY.md") == "fact"
-
-    def test_arbitrary_file_is_fact(self):
-        assert _classify_type("file:project_notes.txt") == "fact"
-
-    def test_remote_url_is_fact(self):
-        assert _classify_type("http://server/facts.md") == "fact"
 
 
 # ---------------------------------------------------------------------------
@@ -45,39 +17,39 @@ class TestClassifyType:
 
 class TestSplitSections:
     def test_plain_file_is_one_section(self):
-        content = "This is a plain file with no GM headers."
+        content = "This is a plain file with no section headers."
         sections = _split_sections(content)
         assert len(sections) == 1
         assert sections[0][1] == content
 
-    def test_plain_file_timestamp_is_empty_string(self):
+    def test_plain_file_header_is_empty_string(self):
         sections = _split_sections("Some content.")
         assert sections[0][0] == ""
 
-    def test_gm_format_splits_on_date_headers(self):
-        content = "## 2026-05-17\nFact one.\n## 2026-05-18\nFact two.\n"
+    def test_splits_on_level2_headings(self):
+        content = "## Topic One\nFact one.\n## Topic Two\nFact two.\n"
         sections = _split_sections(content)
         assert len(sections) == 2
 
-    def test_gm_format_date_time_header(self):
-        content = "## 2026-05-17 09:30\nContent here.\n"
+    def test_heading_text_preserved_in_header(self):
+        content = "## My Section\nContent here.\n"
         sections = _split_sections(content)
         assert len(sections) == 1
-        assert sections[0][0] == "2026-05-17 09:30"
+        assert sections[0][0] == "## My Section"
 
-    def test_gm_format_date_only_header(self):
+    def test_date_heading_splits_correctly(self):
         content = "## 2026-05-17\nContent here.\n"
         sections = _split_sections(content)
-        assert sections[0][0] == "2026-05-17"
+        assert sections[0][0] == "## 2026-05-17"
 
-    def test_gm_format_section_content_correct(self):
-        content = "## 2026-05-17\nFact one.\n## 2026-05-18\nFact two.\n"
+    def test_section_content_correct(self):
+        content = "## Topic One\nFact one.\n## Topic Two\nFact two.\n"
         sections = _split_sections(content)
         assert "Fact one." in sections[0][1]
         assert "Fact two." in sections[1][1]
 
     def test_empty_sections_skipped(self):
-        content = "## 2026-05-17\n\n## 2026-05-18\nHas content.\n"
+        content = "## Topic One\n\n## Topic Two\nHas content.\n"
         sections = _split_sections(content)
         assert len(sections) == 1
         assert "Has content." in sections[0][1]
@@ -88,8 +60,7 @@ class TestSplitSections:
     def test_whitespace_only_returns_empty(self):
         assert _split_sections("   \n  ") == []
 
-    def test_markdown_heading_not_treated_as_gm_header(self):
-        # A regular markdown heading (# or ### etc.) is not a GM section header
+    def test_level1_heading_not_treated_as_section_header(self):
         content = "# Title\nSome content here."
         sections = _split_sections(content)
         assert len(sections) == 1
@@ -135,12 +106,12 @@ class TestParseContent:
         assert len(result) == 1
         assert result[0].raw_content == "New content."
 
-    def test_gm_format_creates_one_experience_per_section(self, db):
+    def test_sectioned_file_creates_one_experience_per_section(self, db):
         content = (
-            "## 2026-05-17\nFact one here.\n"
-            "## 2026-05-18\nFact two here.\n"
+            "## Topic One\nFact one here.\n"
+            "## Topic Two\nFact two here.\n"
         )
-        exps = parse_content(content, "file:MEMORY.md", "file", db)
+        exps = parse_content(content, "file:notes.md", "file", db)
         assert len(exps) == 2
 
     def test_file_hash_stored_after_first_parse(self, db):
@@ -155,18 +126,6 @@ class TestParseContent:
         parse_content("New.", "file:notes.md", "file", db)
         hash2 = db.get_file_hash("file:notes.md")
         assert hash1 != hash2
-
-    def test_type_classification_user_md(self, db):
-        exps = parse_content("Pref content.", "file:/home/x/USER.md", "file", db)
-        assert exps[0].type == "preference"
-
-    def test_type_classification_daily(self, db):
-        exps = parse_content("Mindset content.", "file:/notes/daily/today.md", "file", db)
-        assert exps[0].type == "mindset"
-
-    def test_type_classification_fact(self, db):
-        exps = parse_content("Fact content.", "file:MEMORY.md", "file", db)
-        assert exps[0].type == "fact"
 
     def test_empty_content_creates_no_experiences(self, db):
         exps = parse_content("", "file:empty.md", "file", db)

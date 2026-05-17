@@ -45,7 +45,6 @@ class Database:
                 CREATE TABLE IF NOT EXISTS experiences (
                     id           TEXT PRIMARY KEY,
                     source       TEXT NOT NULL,
-                    type         TEXT NOT NULL,
                     raw_content  TEXT NOT NULL,
                     entities     TEXT NOT NULL,
                     content_hash TEXT NOT NULL,
@@ -116,11 +115,11 @@ class Database:
             con.execute(
                 """
                 INSERT INTO experiences
-                    (id, source, type, raw_content, entities, content_hash, status, run_id, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    (id, source, raw_content, entities, content_hash, status, run_id, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
-                    exp.id, exp.source, exp.type, exp.raw_content,
+                    exp.id, exp.source, exp.raw_content,
                     json.dumps(exp.entities), exp.content_hash,
                     exp.status, exp.run_id, exp.created_at,
                 ),
@@ -163,7 +162,6 @@ class Database:
         return Experience(
             id=row["id"],
             source=row["source"],
-            type=row["type"],
             raw_content=row["raw_content"],
             entities=json.loads(row["entities"]),
             content_hash=row["content_hash"],

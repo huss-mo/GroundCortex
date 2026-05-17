@@ -4,15 +4,14 @@ import hashlib
 import re
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Literal
 
 from groundcortex.buffer.db import Database
 from groundcortex.config import GroundCortexConfig
 from groundcortex.ingestion.base import IngestionAdapter
 from groundcortex.pipeline.models import Experience
 
-# Matches GroundMemory timestamped section headers: ## 2026-05-17 14:30
-_GM_HEADER = re.compile(r"^##\s+(\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?)\s*$", re.MULTILINE)
+# Matches any ## section header (level-2 Markdown heading with content)
+_SECTION_HEADER = re.compile(r"^##\s+\S[^\n]*$", re.MULTILINE)
 
 
 def _sha256(text: str) -> str:
@@ -23,34 +22,26 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _classify_type(source_id: str) -> Literal["fact", "preference", "mindset"]:
-    lower = source_id.lower()
-    if "user.md" in lower:
-        return "preference"
-    if "/daily/" in lower or "\\daily\\" in lower:
-        return "mindset"
-    return "fact"
-
-
 def _split_sections(content: str) -> list[tuple[str, str]]:
-    """Return list of (timestamp_or_empty, section_text) pairs.
+    """Return list of (header, section_text) pairs.
 
-    If the file contains GroundMemory-style ## YYYY-MM-DD [HH:MM] headers,
-    each header starts a new section. Otherwise the whole file is one section.
+    Files with ## headings are split on each heading; each heading and its
+    following content become one section. Files with no ## headings are
+    treated as a single section.
     """
-    matches = list(_GM_HEADER.finditer(content))
+    matches = list(_SECTION_HEADER.finditer(content))
     if not matches:
         stripped = content.strip()
         return [("", stripped)] if stripped else []
 
     sections: list[tuple[str, str]] = []
     for i, m in enumerate(matches):
-        ts = m.group(1).strip()
+        header = m.group(0).strip()
         start = m.end()
         end = matches[i + 1].start() if i + 1 < len(matches) else len(content)
         body = content[start:end].strip()
         if body:
-            sections.append((ts, body))
+            sections.append((header, body))
     return sections
 
 
@@ -76,14 +67,12 @@ def parse_content(
     # Supersede stale experiences before creating new ones
     db.supersede_source(source_id)
 
-    exp_type = _classify_type(source_id)
     now = _now_iso()
     new_experiences: list[Experience] = []
 
-    for _ts, body in _split_sections(content):
+    for _header, body in _split_sections(content):
         exp = Experience(
             source=source_id,
-            type=exp_type,
             raw_content=body,
             entities=[],          # entity extraction is a future enhancement
             content_hash=_sha256(body),

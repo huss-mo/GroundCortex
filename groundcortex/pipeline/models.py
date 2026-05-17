@@ -17,8 +17,7 @@ def _uuid() -> str:
 
 class Experience(BaseModel):
     id: str = Field(default_factory=_uuid)
-    source: str                                   # e.g. "file:MEMORY.md" or "http://..."
-    type: Literal["fact", "preference", "mindset"] = "fact"
+    source: str                                   # e.g. "file:/path/to/file.md" or "http://..."
     raw_content: str
     entities: list[str] = Field(default_factory=list)
     content_hash: str                             # SHA-256 of raw_content
