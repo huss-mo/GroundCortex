@@ -7,39 +7,56 @@ For a project overview and quick start, see [README.md](README.md).
 
 ## Table of Contents
 
-- [Installation & Configuration](#installation--configuration)
-  - [Option 1 - Docker](#option-1--docker)
-  - [Option 2 - uv / pip](#option-2--uv--pip)
-  - [GPU Setup](#gpu-setup)
-  - [Network Access](#network-access)
-- [Ingestion Sources](#ingestion-sources)
-  - [Local File Paths](#local-file-paths)
-  - [Remote URLs](#remote-urls)
-  - [GroundMemory as a Source](#groundmemory-as-a-source)
-  - [Source File Format](#source-file-format)
-- [The Consolidation Pipeline](#the-consolidation-pipeline)
-  - [Change Detection](#change-detection)
-  - [Experience Lifecycle](#experience-lifecycle)
-  - [Training Scope](#training-scope)
-  - [Regularization](#regularization)
-  - [Example Generation](#example-generation)
-  - [Training Hyperparameters](#training-hyperparameters)
-- [Cron Scheduler](#cron-scheduler)
-- [MCP Server](#mcp-server)
-  - [Client Configuration](#client-configuration)
-  - [Tools Reference](#tools-reference)
-  - [Controlling Tool Exposure](#controlling-tool-exposure)
-- [Inference Server](#inference-server)
-  - [Endpoints](#endpoints)
-  - [Switching Adapters](#switching-adapters)
-  - [Authentication](#authentication)
-  - [OpenAI SDK Usage](#openai-sdk-usage)
-- [Programmatic Usage](#programmatic-usage)
-- [Architecture](#architecture)
-  - [Architectural Layers](#architectural-layers)
-  - [Data Flow](#data-flow)
-- [Tech Stack](#tech-stack)
-- [Configuration Reference](#configuration-reference)
+- [GroundCortex - Documentation](#groundcortex---documentation)
+  - [Table of Contents](#table-of-contents)
+  - [Installation \& Configuration](#installation--configuration)
+    - [Option 1 - Docker](#option-1---docker)
+    - [Option 2 - uv / pip](#option-2---uv--pip)
+    - [GPU Setup](#gpu-setup)
+    - [Network Access](#network-access)
+    - [Agent System Prompt](#agent-system-prompt)
+  - [Ingestion Sources](#ingestion-sources)
+    - [Local File Paths](#local-file-paths)
+    - [Remote URLs](#remote-urls)
+    - [GroundMemory as a Source](#groundmemory-as-a-source)
+    - [Source File Format](#source-file-format)
+  - [The Consolidation Pipeline](#the-consolidation-pipeline)
+    - [Change Detection](#change-detection)
+    - [Experience Lifecycle](#experience-lifecycle)
+    - [Training Scope](#training-scope)
+    - [Regularization](#regularization)
+    - [Example Generation](#example-generation)
+    - [Training Hyperparameters](#training-hyperparameters)
+  - [Cron Scheduler](#cron-scheduler)
+  - [MCP Server](#mcp-server)
+    - [Client Configuration](#client-configuration)
+    - [Tools Reference](#tools-reference)
+    - [Controlling Tool Exposure](#controlling-tool-exposure)
+  - [Inference Server](#inference-server)
+    - [Endpoints](#endpoints)
+    - [Switching Adapters](#switching-adapters)
+    - [Authentication](#authentication)
+    - [OpenAI SDK Usage](#openai-sdk-usage)
+  - [Programmatic Usage](#programmatic-usage)
+  - [Architecture](#architecture)
+    - [Architectural Layers](#architectural-layers)
+      - [`config.py` - Settings](#configpy---settings)
+      - [`ingestion/` - Source Adapters](#ingestion---source-adapters)
+      - [`buffer/db.py` - Database](#bufferdbpy---database)
+      - [`pipeline/models.py` - Data Models](#pipelinemodelspy---data-models)
+      - [`pipeline/generator.py` - Example Generator](#pipelinegeneratorpy---example-generator)
+      - [`pipeline/curriculum.py` - Curriculum Manager](#pipelinecurriculumpy---curriculum-manager)
+      - [`training/trainer.py` - LoRA Trainer](#trainingtrainerpy---lora-trainer)
+      - [`consolidator.py` - Pipeline Orchestrator](#consolidatorpy---pipeline-orchestrator)
+      - [`inference/manager.py` - Inference Manager](#inferencemanagerpy---inference-manager)
+      - [`inference_server.py` - FastAPI Inference Server](#inference_serverpy---fastapi-inference-server)
+      - [`mcp_server.py` - FastMCP MCP Server](#mcp_serverpy---fastmcp-mcp-server)
+      - [`scheduler.py` - APScheduler](#schedulerpy---apscheduler)
+      - [`__main__.py` - Entry Point](#__main__py---entry-point)
+    - [PYTHONUTF8](#pythonutf8)
+    - [Data Flow](#data-flow)
+  - [Tech Stack](#tech-stack)
+  - [Configuration Reference](#configuration-reference)
 
 ---
 
@@ -140,6 +157,34 @@ Set API keys when exposing services beyond localhost - see [Authentication](#aut
 **Public internet access**
 
 Do not expose either server directly on the public internet. Place a reverse proxy (nginx, Caddy, Traefik) with TLS in front, and set API keys for authentication.
+
+### Agent System Prompt
+
+Tool descriptions alone are not enough for an agent to understand what GroundCortex is or why it would use it. Add the following block to your agent's system prompt to establish the mental model. The block is self-contained and composable - paste it alongside any existing system prompt instructions without modification.
+
+```
+## GroundCortex - Persistent Memory Consolidation
+
+GroundCortex is a local service that permanently encodes knowledge into an LLM's
+weights by training a LoRA adapter on a set of configured source files. Unlike
+context injection or retrieval-augmented generation, consolidated knowledge becomes
+part of the model itself - available at inference time with no retrieval step and
+no context budget cost.
+
+The cycle: knowledge is written to the source files that GroundCortex is configured
+to watch, then consolidation is triggered. GroundCortex reads the files, 'bakes' them
+into an adapter, and immediately hot-swaps it into the inference server. Subsequent
+queries are answered by a model that knows the new content - not because it was
+retrieved, but because it was trained.
+
+Consolidation is non-destructive. Every run produces a new versioned adapter;
+previous versions accumulate on disk and can be restored at any time.
+
+Use the available GroundCortex tools to trigger and monitor this cycle. Refer to
+each tool's description for when and how to call it.
+```
+
+Adjust the wording to fit your agent's persona or instruction style - the key facts to preserve are the weights-not-retrieval distinction, the source files → consolidation → hot-swap cycle, and the non-destructive versioning.
 
 ---
 

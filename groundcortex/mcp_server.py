@@ -29,12 +29,27 @@ def build_mcp_server(
     # ── Tool definitions ───────────────────────────────────────────────────────
 
     async def _trigger_consolidation() -> dict:
-        """Ingest all sources, train a new LoRA if anything changed, hot-swap adapter."""
+        """Call this after new knowledge has been written to source files.
+
+        Reads all configured sources, detects changes via SHA-256 hash comparison,
+        trains a new adapter from the current knowledge state if any pending content
+        exists, and immediately hot-swaps it into the inference server.
+
+        Returns status="skipped" if nothing has changed since the last run - safe to
+        call redundantly. This is a long-running operation (minutes, not seconds).
+        Do not call it if get_cortex_status shows pending_count=0.
+        """
         from groundcortex.consolidator import run_consolidation
         return await run_consolidation("mcp", db, config, inference_manager)
 
     async def _get_cortex_status() -> dict:
-        """Return active adapter version, pending count, last run metrics, loaded adapters."""
+        """Returns the current service state: active adapter version, last training
+        run outcome, pending experience count, and loaded adapters.
+
+        Use this to check whether a training run is already in progress before
+        triggering another, to identify the active adapter version, or to inspect
+        why a previous run succeeded or failed.
+        """
         active_run = db.get_active_run()
         return {
             "active_version": inference_manager.get_active_version(),
@@ -55,11 +70,12 @@ def build_mcp_server(
         return [r for r in reversed(db.list_runs()) if r.status == "complete"]
 
     async def _list_adapters() -> dict:
-        """List all successfully trained adapters.
+        """Lists all successfully trained adapters in chronological order (oldest first).
 
-        Each entry includes a pre-computed negative index so agents can pass
-        -1 (most recent), -2 (one before), etc. to switch_adapter without
-        needing to know exact version names.
+        Call this before switch_adapter to see what versions exist. Each entry
+        includes a pre-computed negative index (-1 = most recent, -2 = one before,
+        etc.) that can be passed directly to switch_adapter. Failed training runs
+        are excluded from the list.
         """
         runs = _complete_runs_asc()
         n = len(runs)
@@ -81,11 +97,15 @@ def build_mcp_server(
         }
 
     async def _switch_adapter(version_id: str) -> dict:
-        """Activate a previously trained adapter by version ID or negative index.
+        """Activates a previously trained adapter by version name or negative index.
 
-        version_id can be a version name (e.g. "v3") or a negative index
-        (-1 = most recent, -2 = one before, etc.). Use list_adapters to
-        see all available versions and their indices.
+        version_id can be a version name (e.g. "v3") or a negative index as a
+        string ("-1" = most recent, "-2" = one before, etc.). Call list_adapters
+        first to see available versions and their indices.
+
+        Use this to roll back if a recent consolidation produced unexpected results,
+        or to compare specific knowledge versions. Cannot be called while training
+        is in progress.
         """
         if inference_manager.is_training:
             return {"status": "error", "message": "Cannot switch adapter: training in progress."}
@@ -104,7 +124,7 @@ def build_mcp_server(
                 run = complete[idx]
                 version_id = run.version
         except ValueError:
-            pass  # not an integer — fall through to version-name lookup
+            pass  # not an integer - fall through to version-name lookup
 
         if run is None:
             run = db.get_run_by_version(version_id)

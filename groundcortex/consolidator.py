@@ -82,7 +82,7 @@ async def run_consolidation(
     # 4. Train
     # When offload_during_training=True (default): release the inference model
     # before training so only one copy of the base model is in memory at a time.
-    # When False: trainer loads its own copy — inference stays live at the cost
+    # When False: trainer loads its own copy - inference stays live at the cost
     # of 2× base model memory.
     prev_adapter_path: str | None = None
     prev_version: str | None = None

@@ -52,6 +52,8 @@ Point `GROUNDCORTEX_SOURCE_PATHS` at your knowledge files (or `GROUNDCORTEX_REMO
 python examples/run_pipeline.py
 ```
 
+For the agent to understand when and how to use these tools, add the GroundCortex system prompt block to your agent's system prompt - see [DOCS.md - Agent System Prompt](DOCS.md#agent-system-prompt).
+
 For configuration, GPU setup, ingestion sources, and the full API reference, see [DOCS.md](DOCS.md).
 
 ---
