@@ -5,7 +5,7 @@ import pytest
 
 from groundcortex.config import GroundCortexConfig
 
-_ALL_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_lora_version", "list_lora_versions"}
+_ALL_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_adapter", "list_adapters"}
 
 
 def _cfg(tmp_path, **kwargs) -> GroundCortexConfig:
@@ -83,8 +83,8 @@ class TestValidators:
         assert cfg.remote_source_urls == []
 
     def test_mcp_tools_parsed_from_comma_string(self, tmp_path):
-        cfg = _cfg(tmp_path, mcp_exposed_tools="get_cortex_status,switch_lora_version")
-        assert set(cfg.mcp_exposed_tools) == {"get_cortex_status", "switch_lora_version"}
+        cfg = _cfg(tmp_path, mcp_exposed_tools="get_cortex_status,switch_adapter")
+        assert set(cfg.mcp_exposed_tools) == {"get_cortex_status", "switch_adapter"}
 
     def test_unknown_mcp_tool_raises_value_error(self, tmp_path):
         with pytest.raises(Exception):
@@ -119,8 +119,8 @@ class TestValidators:
             mcp_exposed_tools=[
                 "trigger_consolidation",
                 "get_cortex_status",
-                "switch_lora_version",
-                "list_lora_versions",
+                "switch_adapter",
+                "list_adapters",
             ],
         )
         assert set(cfg.mcp_exposed_tools) == _ALL_TOOLS

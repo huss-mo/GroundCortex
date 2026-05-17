@@ -389,7 +389,7 @@ For clients that use the `stdio` transport:
 
 **`trigger_consolidation`**
 
-Runs the full consolidation pipeline: ingest all sources, train a new LoRA if anything changed, hot-swap the adapter in the inference server.
+Runs the full consolidation pipeline: ingest all sources, train a new adapter if anything changed, hot-swap it in the inference server.
 
 Returns:
 
@@ -425,15 +425,38 @@ Returns the current state of the service.
 
 ---
 
-**`switch_lora_version`**
+**`list_adapters`**
 
-Activates a previously trained adapter by version ID. The adapter is loaded into the inference manager if it is not already in memory.
+Returns all successfully trained adapters in chronological order (oldest first), each with a pre-computed negative index. Use this before calling `switch_adapter` so the agent knows what versions exist.
+
+| Field | Type | Description |
+|---|---|---|
+| `versions` | list | All complete adapters, oldest first |
+| `total` | int | Number of complete adapters |
+| `active_version` | string or null | Currently active version ID |
+
+Each entry in `versions`:
+
+| Field | Type | Description |
+|---|---|---|
+| `version` | string | Version name (e.g. `"v2"`) |
+| `is_active` | bool | Whether this is the currently active adapter |
+| `trigger` | string | `"mcp"` or `"cron"` |
+| `created_at` | string | ISO datetime when the run started |
+| `completed_at` | string or null | ISO datetime when training finished |
+| `index` | int | Negative index for use with `switch_adapter` (`-1` = most recent) |
+
+---
+
+**`switch_adapter`**
+
+Activates a previously trained adapter. The adapter is loaded into the inference manager if it is not already in memory.
 
 Parameters:
 
 | Parameter | Type | Description |
 |---|---|---|
-| `version_id` | string | The version to activate (e.g. `"v1"`) |
+| `version_id` | string | Version name (e.g. `"v2"`) or negative index (`"-1"` = most recent, `"-2"` = one before, etc.) |
 
 Returns:
 
@@ -441,17 +464,18 @@ Returns:
 |---|---|---|
 | `status` | string | `"ok"` or `"error"` |
 | `active_version` | string | The now-active version - only present when `status="ok"` |
+| `previous_version` | string or null | The previously active version - only present when `status="ok"` |
 | `message` | string | Error description - only present when `status="error"` |
 
-Common error conditions: version not found in database; version exists but its training run did not complete successfully; training is currently in progress (when `OFFLOAD_DURING_TRAINING=true`, the model is temporarily unloaded and cannot load a new adapter).
+Common error conditions: version not found; version exists but training did not complete successfully; index out of range; training is currently in progress (when `OFFLOAD_DURING_TRAINING=true`, the model is temporarily unloaded and cannot load a new adapter).
 
 ### Controlling Tool Exposure
 
-By default, all three tools are registered. Use `GROUNDCORTEX_MCP_EXPOSED_TOOLS` to restrict which tools your MCP client sees:
+By default, all four tools are registered. Use `GROUNDCORTEX_MCP_EXPOSED_TOOLS` to restrict which tools your MCP client sees:
 
 ```bash
 # Expose only status and version switching (no ability to trigger training)
-GROUNDCORTEX_MCP_EXPOSED_TOOLS=get_cortex_status,switch_lora_version
+GROUNDCORTEX_MCP_EXPOSED_TOOLS=get_cortex_status,switch_adapter
 
 # Expose a single tool
 GROUNDCORTEX_MCP_EXPOSED_TOOLS=get_cortex_status
@@ -528,10 +552,10 @@ curl http://127.0.0.1:4344/v1/chat/completions \
   -d '{"model": "v1", "messages": [...]}'
 
 # Switch back to the latest via MCP
-# call switch_lora_version with version_id="v2"
+# call switch_adapter with version_id="v2"
 ```
 
-To switch between adapters without making an inference call, use the `switch_lora_version` MCP tool.
+To switch between adapters without making an inference call, use the `switch_adapter` MCP tool.
 
 ### Authentication
 
@@ -684,7 +708,7 @@ Module-level globals `_inference_manager` and `_config` are set by `init()` at s
 
 #### `mcp_server.py` - FastMCP MCP Server
 
-`build_mcp_server(config, db, inference_manager)` creates a `FastMCP` instance and registers only the tools listed in `config.mcp_exposed_tools`. If the list is empty, all three tools are registered. Tool handlers are closures over `db` and `inference_manager` - no globals.
+`build_mcp_server(config, db, inference_manager)` creates a `FastMCP` instance and registers only the tools listed in `config.mcp_exposed_tools`. If the list is empty, all four tools are registered. Tool handlers are closures over `db` and `inference_manager` - no globals.
 
 #### `scheduler.py` - APScheduler
 
@@ -838,7 +862,7 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 | `GROUNDCORTEX_MCP_HOST` | Host address the MCP server binds to | `127.0.0.1` |
 | `GROUNDCORTEX_MCP_PORT` | TCP port the MCP server listens on | `4343` |
 | `GROUNDCORTEX_MCP_API_KEY` | Bearer token required on every MCP request. When unset, no authentication is enforced. | *(empty)* |
-| `GROUNDCORTEX_MCP_EXPOSED_TOOLS` | Comma-separated list of tools to expose. Empty = all three tools. Valid values: `trigger_consolidation`, `get_cortex_status`, `switch_lora_version` | *(empty - all exposed)* |
+| `GROUNDCORTEX_MCP_EXPOSED_TOOLS` | Comma-separated list of tools to expose. Empty = all four tools. Valid values: `trigger_consolidation`, `get_cortex_status`, `list_adapters`, `switch_adapter` | *(empty - all exposed)* |
 
 **Inference Server**
 

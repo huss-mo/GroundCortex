@@ -76,7 +76,7 @@ This also means the boundary between a model and the system it operates in becom
 
 **Point GroundCortex at any structured source and walk away.** Local files, remote URLs, a knowledge base, a documentation tree - GroundCortex watches for changes, ingests them, and trains a new adapter automatically. No pipeline to maintain. No re-ingestion logic to write. The cron scheduler and SHA-256 change detection handle it.
 
-**Every adapter is versioned and auditable.** Each consolidation run produces a numbered version with a full lineage record: which source files were ingested, which experiences were trained on, what hyperparameters were used, and when it ran. Adapters are never overwritten - the full history accumulates on disk. `switch_lora_version` lets you activate any previous adapter by ID, making rollback a one-step operation.
+**Every adapter is versioned and auditable.** Each consolidation run produces a numbered version with a full lineage record: which source files were ingested, which experiences were trained on, what hyperparameters were used, and when it ran. Adapters are never overwritten - the full history accumulates on disk. `switch_adapter` lets you activate any previous adapter by ID, making rollback a one-step operation.
 
 **Knowledge accumulates without drift.** Each new adapter is trained from the base model on the complete current knowledge state - not built on top of a previous adapter. This keeps every version self-contained and prevents accumulated drift across runs. Adding new content produces a model that knows everything the last version knew, plus what changed.
 
@@ -113,9 +113,10 @@ Three tools are exposed by the MCP server. Each can be selectively enabled or di
 
 | Tool | Description |
 |---|---|
-| `trigger_consolidation` | Ingest all source files, train a new LoRA adapter if anything changed, and hot-swap it into the inference server. Returns the new version ID and training status. |
+| `trigger_consolidation` | Ingest all source files, train a new adapter if anything changed, and hot-swap it into the inference server. Returns the new version ID and training status. |
 | `get_cortex_status` | Returns the active adapter version, pending experience count, loaded adapters list, and last training run details. |
-| `switch_lora_version` | Activate a previously trained adapter by version ID. Useful for rolling back or testing prior adapter versions. |
+| `list_adapters` | List all successfully trained adapters with their version names and negative indices for easy switching. |
+| `switch_adapter` | Activate a previously trained adapter by version name or negative index (-1 = latest). Useful for rollback or testing prior versions. |
 
 For client configuration and tool parameters, see [DOCS.md - MCP Server](DOCS.md#mcp-server).
 
@@ -159,7 +160,8 @@ For client configuration and tool parameters, see [DOCS.md - MCP Server](DOCS.md
 │                          │  │                              │
 │  trigger_consolidation   │  │  POST /v1/chat/completions   │
 │  get_cortex_status       │  │  GET  /v1/models             │
-│  switch_lora_version     │  │  OpenAI-compatible           │
+│  list_adapters           │  │  OpenAI-compatible           │
+│  switch_adapter          │  │                              │
 └──────────────────────────┘  └──────────────────────────────┘
                ▲
                │ cron trigger

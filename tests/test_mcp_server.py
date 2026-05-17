@@ -11,7 +11,7 @@ from groundcortex.config import GroundCortexConfig
 from groundcortex.mcp_server import build_mcp_server
 from groundcortex.pipeline.models import TrainingRun
 
-_ALL_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_lora_version", "list_lora_versions"}
+_ALL_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_adapter", "list_adapters"}
 
 
 # ---------------------------------------------------------------------------
@@ -90,10 +90,10 @@ class TestToolRegistration:
 
     def test_two_tools_registered(self, tmp_path):
         mcp = build_mcp_server(
-            _cfg(tmp_path, ["get_cortex_status", "switch_lora_version"]),
+            _cfg(tmp_path, ["get_cortex_status", "switch_adapter"]),
             _db(), _mgr(),
         )
-        assert _registered_names(mcp) == {"get_cortex_status", "switch_lora_version"}
+        assert _registered_names(mcp) == {"get_cortex_status", "switch_adapter"}
 
     def test_all_three_explicit(self, tmp_path):
         mcp = build_mcp_server(
@@ -105,7 +105,7 @@ class TestToolRegistration:
         mcp = build_mcp_server(_cfg(tmp_path, ["get_cortex_status"]), _db(), _mgr())
         names = _registered_names(mcp)
         assert "trigger_consolidation" not in names
-        assert "switch_lora_version" not in names
+        assert "switch_adapter" not in names
 
 
 # ---------------------------------------------------------------------------
@@ -156,7 +156,7 @@ class TestGetCortexStatus:
 
 
 # ---------------------------------------------------------------------------
-# switch_lora_version
+# switch_adapter
 # ---------------------------------------------------------------------------
 
 class TestSwitchLoraVersion:
@@ -165,13 +165,13 @@ class TestSwitchLoraVersion:
         db.get_run_by_version.return_value = run
         db.set_active_run = MagicMock()
         return build_mcp_server(
-            _cfg(tmp_path, ["switch_lora_version"]),
+            _cfg(tmp_path, ["switch_adapter"]),
             db,
             _mgr(adapters=adapters or []),
         )
 
     def _call(self, mcp, version_id) -> dict:
-        return _parse(_run(mcp.call_tool("switch_lora_version", {"version_id": version_id})))
+        return _parse(_run(mcp.call_tool("switch_adapter", {"version_id": version_id})))
 
     def test_version_not_found_returns_error(self, tmp_path):
         mcp = self._build(tmp_path, run=None)
@@ -210,8 +210,8 @@ class TestSwitchLoraVersion:
         mgr = _mgr(adapters=[])  # v1 not yet loaded
         db = MagicMock()
         db.get_run_by_version.return_value = run
-        mcp = build_mcp_server(_cfg(tmp_path, ["switch_lora_version"]), db, mgr)
-        _run(mcp.call_tool("switch_lora_version", {"version_id": "v1"}))
+        mcp = build_mcp_server(_cfg(tmp_path, ["switch_adapter"]), db, mgr)
+        _run(mcp.call_tool("switch_adapter", {"version_id": "v1"}))
         mgr.load_adapter.assert_called_once_with("/adapters/v1", "v1")
 
     def test_already_loaded_adapter_not_loaded_again(self, tmp_path):
@@ -221,8 +221,8 @@ class TestSwitchLoraVersion:
         mgr = _mgr(adapters=["v1"])  # already loaded
         db = MagicMock()
         db.get_run_by_version.return_value = run
-        mcp = build_mcp_server(_cfg(tmp_path, ["switch_lora_version"]), db, mgr)
-        _run(mcp.call_tool("switch_lora_version", {"version_id": "v1"}))
+        mcp = build_mcp_server(_cfg(tmp_path, ["switch_adapter"]), db, mgr)
+        _run(mcp.call_tool("switch_adapter", {"version_id": "v1"}))
         mgr.load_adapter.assert_not_called()
 
 
@@ -235,7 +235,7 @@ def _make_runs(*versions: str) -> list[TrainingRun]:
 
 
 # ---------------------------------------------------------------------------
-# list_lora_versions
+# list_adapters
 # ---------------------------------------------------------------------------
 
 class TestListLoraVersions:
@@ -244,13 +244,13 @@ class TestListLoraVersions:
         # list_runs returns DESC; the tool reverses to get ASC
         db.list_runs.return_value = list(reversed(runs or []))
         return build_mcp_server(
-            _cfg(tmp_path, ["list_lora_versions"]),
+            _cfg(tmp_path, ["list_adapters"]),
             db,
             _mgr(active="v2"),
         )
 
     def _call(self, mcp) -> dict:
-        return _parse(_run(mcp.call_tool("list_lora_versions", {})))
+        return _parse(_run(mcp.call_tool("list_adapters", {})))
 
     def test_empty_returns_zero_total(self, tmp_path):
         mcp = self._build(tmp_path, runs=[])
@@ -288,14 +288,14 @@ class TestListLoraVersions:
         complete = TrainingRun(version="v2", trigger="mcp", adapter_path="/p", status="complete")
         db = MagicMock()
         db.list_runs.return_value = [complete, failed]  # DESC order
-        mcp = build_mcp_server(_cfg(tmp_path, ["list_lora_versions"]), db, _mgr())
-        result = _parse(_run(mcp.call_tool("list_lora_versions", {})))
+        mcp = build_mcp_server(_cfg(tmp_path, ["list_adapters"]), db, _mgr())
+        result = _parse(_run(mcp.call_tool("list_adapters", {})))
         assert result["total"] == 1
         assert result["versions"][0]["version"] == "v2"
 
 
 # ---------------------------------------------------------------------------
-# switch_lora_version - negative index
+# switch_adapter - negative index
 # ---------------------------------------------------------------------------
 
 class TestSwitchLoraVersionNegativeIndex:
@@ -304,13 +304,13 @@ class TestSwitchLoraVersionNegativeIndex:
         db.list_runs.return_value = list(reversed(runs))  # DESC order from DB
         db.set_active_run = MagicMock()
         return build_mcp_server(
-            _cfg(tmp_path, ["switch_lora_version"]),
+            _cfg(tmp_path, ["switch_adapter"]),
             db,
             _mgr(adapters=[r.version for r in runs]),
         ), db
 
     def _call(self, mcp, version_id) -> dict:
-        return _parse(_run(mcp.call_tool("switch_lora_version", {"version_id": version_id})))
+        return _parse(_run(mcp.call_tool("switch_adapter", {"version_id": version_id})))
 
     def test_minus_one_activates_latest(self, tmp_path):
         runs = _make_runs("v1", "v2", "v3")
@@ -353,10 +353,10 @@ class TestSwitchLoraVersionNegativeIndex:
         db.get_run_by_version.return_value = runs[0]
         db.set_active_run = MagicMock()
         mcp = build_mcp_server(
-            _cfg(tmp_path, ["switch_lora_version"]),
+            _cfg(tmp_path, ["switch_adapter"]),
             db,
             _mgr(adapters=["v1", "v2"]),
         )
-        result = _parse(_run(mcp.call_tool("switch_lora_version", {"version_id": "v1"})))
+        result = _parse(_run(mcp.call_tool("switch_adapter", {"version_id": "v1"})))
         assert result["status"] == "ok"
         assert result["active_version"] == "v1"

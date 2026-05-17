@@ -6,7 +6,7 @@ from typing import Literal
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_ALL_MCP_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_lora_version", "list_lora_versions"}
+_ALL_MCP_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_adapter", "list_adapters"}
 
 
 class GroundCortexConfig(BaseSettings):
