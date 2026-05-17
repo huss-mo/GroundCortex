@@ -1,9 +1,40 @@
 # GroundCortex
 
-**Continuous weight-level learning for local LLMs - turn any structured knowledge base into a LoRA adapter, automatically.**
+**Continuous LoRA fine-tuning as a local service: watch source files for changes, retrain on change, hot-swap into a live inference endpoint, and expose the pipeline to running agents via MCP.**
 
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+---
+
+## What is GroundCortex?
+
+GroundCortex is a persistent background service that continuously retrains a local LLM's LoRA adapter on a set of configured source files. Whenever a file changes, GroundCortex detects it, trains a new adapter from the updated content, and hot-swaps it into the running inference server. The model that handles the next request reflects those changes in its weights — not in its context.
+
+Source files can encode anything expressible in text: factual knowledge, behavioral tendencies, preferences, domain conventions, reasoning patterns. The model doesn't retrieve this at query time — it was trained on it.
+
+---
+
+## How It Works
+
+GroundCortex runs as a persistent background service - three components in one process, sharing one event loop.
+
+**Ingestion.** Source files (local paths or remote URLs) are read on each consolidation cycle. Each file's SHA-256 hash is compared to the stored value. Unchanged files are skipped entirely. Changed or new files are re-parsed into sections called *experiences* - atomic units of knowledge that track their own training history.
+
+**Consolidation.** When pending experiences exist, the pipeline runs. Each experience is expanded into five training example variants (direct recall, negation, scenario, comparative, reasoning). A fixed set of regularization examples is always added to preserve general language ability. A new LoRA adapter is trained from scratch on the base model and saved to disk.
+
+**Inference.** The new adapter is hot-swapped into the running inference server via PEFT's multi-adapter mechanism. Queries answered through it draw on both the base model's pretraining and the consolidated knowledge. Previously trained adapters stay loaded and can be reactivated by name.
+
+Consolidation is triggered by the cron scheduler (default: 2 AM daily) or by calling the `trigger_consolidation` MCP tool. Both paths execute the same pipeline - the trigger source is recorded in the training run log.
+
+**Key properties:**
+
+- Each LoRA is trained fresh from the base model, never stacked on a previous LoRA. This keeps adapters self-contained and prevents drift across runs.
+- Training scope includes the full current knowledge state - all `pending` and `trained` experiences - not just the delta. The new adapter knows everything the previous one knew, plus what changed.
+- Regularization is non-negotiable. Every run mixes in general Q&A examples that preserve the model's broad capability while domain knowledge is injected.
+- On startup, the previously active adapter is reloaded automatically. Restarts do not reset the model state.
+
+For a detailed breakdown of the consolidation pipeline, change detection, experience lifecycle, and training hyperparameters, see [DOCS.md - The Consolidation Pipeline](DOCS.md#the-consolidation-pipeline).
 
 ---
 
@@ -58,6 +89,24 @@ For configuration, GPU setup, ingestion sources, and the full API reference, see
 
 ---
 
+## Why Not Just Fine-Tune?
+
+A standard fine-tuning pipeline is a one-shot operation: prepare a dataset, run a training script, load the result. If you want to update what the model knows, repeat manually. There is no connection between the model's weights and the world it operates in.
+
+GroundCortex is different on four specific points:
+
+**Automation.** Source files are watched automatically. Changed files trigger re-ingestion; unchanged files are skipped entirely. A cron scheduler runs consolidation on a configurable schedule. No manual intervention after initial setup.
+
+**Orchestration.** Ingestion, training, and serving are one pipeline. A source file change flows automatically through change detection, training, and hot-swap into the running inference server. There is no glue code to write or maintain.
+
+**Agent self-improvement.** An agent with write access to source files and the `trigger_consolidation` MCP tool can update its own model weights at runtime. The loop - observe, write, consolidate, know - is not achievable with a static fine-tuning script.
+
+**Pre-validated configuration.** The training hyperparameters were validated experimentally (see `examples/hypothesis.py`) to produce reliable knowledge injection without degrading general capability. Rank, learning rate, epochs, and regularization are set to known-correct values. You do not need to determine what works.
+
+Catastrophic forgetting prevention and adapter versioning are part of the infrastructure - handled correctly by default.
+
+---
+
 ## The Problem with Static Weights
 
 A model is trained once, on a fixed dataset, at a fixed point in time. After that, its weights do not change. Everything the world generates after the training cutoff - decisions, discoveries, conventions, accumulated knowledge - has to be carried externally: injected into context, retrieved from a vector store, prepended to every prompt. The model itself never learns.
@@ -74,7 +123,7 @@ This also means the boundary between a model and the system it operates in becom
 
 ## What This Makes Possible
 
-**Agents that evolve themselves.** An agent with write access to its own source files and the ability to call `trigger_consolidation` can decide what it learns. Patterns it notices, corrections it receives, domain knowledge it accumulates - any of it can be written down and consolidated into the next version of its weights. This is one application of GroundCortex, but it is a significant one: it is the mechanism that makes a genuinely self-improving agent possible.
+**Agents that evolve themselves.** An agent with write access to its own source files and the ability to call `trigger_consolidation` can decide what it learns. Patterns it notices, corrections it receives, domain knowledge it accumulates — any of it can be written down and consolidated into the next version of its weights.
 
 **Point GroundCortex at any structured source and walk away.** Local files, remote URLs, a knowledge base, a documentation tree - GroundCortex watches for changes, ingests them, and trains a new adapter automatically. No pipeline to maintain. No re-ingestion logic to write. The cron scheduler and SHA-256 change detection handle it.
 
@@ -86,32 +135,9 @@ This also means the boundary between a model and the system it operates in becom
 
 ---
 
-## How It Works
-
-GroundCortex runs as a persistent background service - three components in one process, sharing one event loop.
-
-**Ingestion.** Source files (local paths or remote URLs) are read on each consolidation cycle. Each file's SHA-256 hash is compared to the stored value. Unchanged files are skipped entirely. Changed or new files are re-parsed into sections called *experiences* - atomic units of knowledge that track their own training history.
-
-**Consolidation.** When pending experiences exist, the pipeline runs. Each experience is expanded into five training example variants (direct recall, negation, scenario, comparative, reasoning). A fixed set of regularization examples is always added - without these, domain-specific training would cause catastrophic forgetting of general language ability. A new LoRA adapter is trained from scratch on the base model and saved to disk.
-
-**Inference.** The new adapter is hot-swapped into the running inference server via PEFT's multi-adapter mechanism. Queries answered through it draw on both the base model's pretraining and the consolidated knowledge. Previously trained adapters stay loaded and can be reactivated by name.
-
-Consolidation is triggered by the cron scheduler (default: 2 AM daily) or by calling the `trigger_consolidation` MCP tool. Both paths execute the same pipeline - the trigger source is recorded in the training run log.
-
-**Key properties:**
-
-- Each LoRA is trained fresh from the base model, never stacked on a previous LoRA. This keeps adapters self-contained and prevents drift across runs.
-- Training scope includes the full current knowledge state - all `pending` and `trained` experiences - not just the delta. The new adapter knows everything the previous one knew, plus what changed.
-- Regularization is non-negotiable. Every run mixes in general Q&A examples that preserve the model's broad capability while domain knowledge is injected.
-- On startup, the previously active adapter is reloaded automatically. Restarts do not reset the model state.
-
-For a detailed breakdown of the consolidation pipeline, change detection, experience lifecycle, and training hyperparameters, see [DOCS.md - The Consolidation Pipeline](DOCS.md#the-consolidation-pipeline).
-
----
-
 ## MCP Tools
 
-Three tools are exposed by the MCP server. Each can be selectively enabled or disabled via `GROUNDCORTEX_MCP_EXPOSED_TOOLS`:
+Four tools are exposed by the MCP server. Each can be selectively enabled or disabled via `GROUNDCORTEX_MCP_EXPOSED_TOOLS`:
 
 | Tool | Description |
 |---|---|
