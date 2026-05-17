@@ -276,15 +276,22 @@ This is not a workaround - it is a hard requirement. The original hypothesis tes
 
 ### Example Generation
 
-Each experience is expanded into 5 training example variants using `ExampleGenerator`:
+Each experience is expanded into 5 training Q&A pairs using `ExampleGenerator`. The generator sends the raw content to the base model with a few-shot prompt instructing it to produce 5 diverse question-answer pairs as a JSON array:
 
-| Variant | Pattern |
-|---|---|
-| `direct` | "What do you know about {entity}?" → direct statement |
-| `negative` | "Is it true that {wrong_assumption}?" → "No, {correct fact}." |
-| `scenario` | "If someone asked you about {entity}, what would you say?" → full answer |
-| `comparative` | "How would you describe {entity}?" → answer contrasting common assumption |
-| `reasoning` | "Explain {entity} in context." → fact with brief elaboration |
+```
+System: You generate training question-answer pairs from factual content.
+        Given a passage, output exactly 5 diverse Q&A pairs as a JSON array.
+        Vary the phrasing, angle, and approach across questions...
+
+Few-shot examples: [2 neutral examples embedded in the message history]
+
+User: Content: <experience.raw_content>
+      Output:
+```
+
+The **base model** is always used for this step, never the active LoRA adapter. Using the LoRA would risk circular reinforcement: the adapter's existing baked-in knowledge could influence how new training pairs are phrased, subtly biasing successive training runs. The base model has no such history.
+
+If the LLM call fails or returns unparseable output, `ExampleGenerator` falls back to 5 static template pairs derived from the raw content. This ensures training always has examples to work with regardless of model availability.
 
 Multiple phrasings of the same fact are critical: a model trained on a single phrasing often fails to recall the fact when the question is worded differently. Five variants give enough coverage to generalize.
 
@@ -436,7 +443,7 @@ Returns:
 | `active_version` | string | The now-active version - only present when `status="ok"` |
 | `message` | string | Error description - only present when `status="error"` |
 
-Common error conditions: version not found in database; version exists but its training run did not complete successfully.
+Common error conditions: version not found in database; version exists but its training run did not complete successfully; training is currently in progress (when `OFFLOAD_DURING_TRAINING=true`, the model is temporarily unloaded and cannot load a new adapter).
 
 ### Controlling Tool Exposure
 
@@ -506,6 +513,7 @@ Returns a standard OpenAI chat completion object with `id`, `object`, `choices`,
 | Code | Condition |
 |---|---|
 | 503 | No inference manager initialized (server still loading model) |
+| 503 | Training in progress and `GROUNDCORTEX_OFFLOAD_DURING_TRAINING=true` - model is temporarily unloaded |
 | 503 | Model not ready (base model still loading) |
 | 404 | `model` field specifies a version ID that is not loaded |
 | 401 | API key configured but token missing or incorrect |
@@ -646,22 +654,27 @@ Pydantic models shared across the pipeline: `Experience`, `TrainingExample`, `Tr
 
 1. Runs all ingestion adapters.
 2. Checks `count_pending()` - returns `"skipped"` if zero.
-3. Builds the training dataset via `CurriculumManager`.
-4. Trains via `LoRATrainer`.
-5. Marks all pending experiences as `trained`; saves the training run record.
-6. Hot-swaps the adapter in `InferenceManager`.
-7. Returns a status dict.
+3. Builds the training dataset via `CurriculumManager`, passing `inference_manager.generate_base` as the example generation function.
+4. If `offload_during_training=true`: calls `inference_manager.offload()` to release the model from memory before training starts.
+5. Trains via `LoRATrainer` (which loads its own copy of the base model).
+6. If `offload_during_training=true`: calls `inference_manager.load_base()` to reload the model after training.
+7. Marks all pending experiences as `trained`; saves the training run record.
+8. Hot-swaps the new adapter in `InferenceManager`.
+9. Returns a status dict.
 
-If training raises an exception, the run is marked `"failed"` and the existing active adapter remains unchanged.
+If training raises an exception, the run is marked `"failed"`. If the model was offloaded, it is reloaded and the previously active adapter is restored.
 
 #### `inference/manager.py` - Inference Manager
 
 `InferenceManager` holds the base model in memory and manages PEFT multi-adapter hot-swap:
 
-- `load_base()` - loads `AutoModelForCausalLM` and `AutoTokenizer` from the configured model name. Called once at startup.
+- `load_base()` - loads `AutoModelForCausalLM` and `AutoTokenizer` from the configured model name. Called once at startup and again after training when `offload_during_training=true`. Also clears the `is_training` flag.
 - `load_adapter(adapter_path, version_id)` - calls `PeftModel.load_adapter()` to attach a LoRA adapter to the base model.
 - `set_active(version_id)` - calls `model.set_adapter()` to activate a loaded adapter.
-- `generate(messages, max_new_tokens)` - applies the chat template and runs `model.generate()` with greedy decoding.
+- `generate(messages, max_new_tokens)` - applies the chat template and runs `model.generate()` using the active adapter (or base model if no adapter is loaded).
+- `generate_base(messages, max_new_tokens)` - same as `generate` but always uses the raw base model weights, bypassing any active LoRA adapter. Used during training example generation to prevent circular reinforcement.
+- `offload()` - releases all model references from device memory and sets `is_training=True`. Called before `LoRATrainer` loads its own copy of the base model, keeping peak memory at 1× base model.
+- `is_training` / `is_ready` properties - queried by the inference server and MCP server to return appropriate 503 responses.
 
 Multiple adapters can be loaded simultaneously (`list_loaded_adapters()`). Switching between them with `set_active()` does not require reloading from disk.
 
@@ -724,22 +737,31 @@ Compute SHA-256 → compare against source_files table
      ▼ (consolidation triggered)
 count_pending() == 0? → return "skipped"
      │
-     ▼ CurriculumManager
+     ▼ CurriculumManager (uses InferenceManager.generate_base for example generation)
 Load trained experiences → fetch cached training_examples rows
 Load pending experiences → run ExampleGenerator → save new training_examples rows
 Append 19 regularization examples
 Assemble HuggingFace Dataset
      │
+     ▼ InferenceManager.offload()  [if OFFLOAD_DURING_TRAINING=true]
+Release base model + adapters from device memory
+is_training = True  →  inference/MCP endpoints return 503
+     │
      ▼ LoRATrainer
-Load base model weights
+Load base model weights (fresh copy)
 Apply LoRA config (rank=32, all 7 projection layers)
 SFTTrainer.train() with assistant_only_loss=True
 Save adapter to {output_dir}/v{n}_{timestamp}/
+Trainer model garbage collected
      │
      ▼ Database update
 Mark pending experiences → trained (run_id = new run)
 Create training_runs row (status=complete, is_active=1)
 Clear is_active on previous run
+     │
+     ▼ InferenceManager.load_base()  [if OFFLOAD_DURING_TRAINING=true]
+Reload base model + tokenizer
+is_training = False
      │
      ▼ InferenceManager
 load_adapter(adapter_path, version_id)
@@ -792,6 +814,7 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 | `GROUNDCORTEX_LEARNING_RATE` | Learning rate | `5e-4` |
 | `GROUNDCORTEX_EPOCHS` | Training epochs | `25` |
 | `GROUNDCORTEX_BATCH_SIZE` | Per-device training batch size | `2` |
+| `GROUNDCORTEX_OFFLOAD_DURING_TRAINING` | Release inference model from memory before training, keeping peak memory at 1× base model. When `false`, the trainer loads a second copy simultaneously - only viable with enough VRAM for two copies. Inference and MCP endpoints return 503 during training when this is `true`. | `true` |
 
 **Ingestion Sources**
 

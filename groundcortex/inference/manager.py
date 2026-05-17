@@ -30,9 +30,11 @@ class InferenceManager:
         self._tokenizer = None
         self._active_version: str | None = None
         self._loaded_adapters: list[str] = []
+        self._is_training: bool = False
 
     def load_base(self) -> None:
         """Load the base model and tokenizer. Call once at startup."""
+        self._is_training = False
         cfg = self._config
         logger.info("Loading base model: %s on %s", cfg.model_name, self._device)
 
@@ -156,6 +158,7 @@ class InferenceManager:
         offload() first ensures only one copy of the base model is in memory
         at any time. Reload with load_base() + load_adapter() afterward.
         """
+        self._is_training = True
         self._model = None
         self._base_model = None
         self._loaded_adapters = []
@@ -175,3 +178,7 @@ class InferenceManager:
     @property
     def is_ready(self) -> bool:
         return self._base_model is not None
+
+    @property
+    def is_training(self) -> bool:
+        return self._is_training

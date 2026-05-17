@@ -233,6 +233,38 @@ class TestRunConsolidation:
             result = _run(run_consolidation("mcp", db, config, inference_manager=None))
         assert result["status"] == "complete"  # must not raise
 
+    def test_no_offload_when_offload_disabled(self, db, config, tmp_path):
+        from groundcortex.consolidator import run_consolidation
+        config.offload_during_training = False
+        _add_pending(db)
+        mock_manager = MagicMock()
+        patch_ctx, _ = _patch_trainer(str(tmp_path / "adapters" / "v1"))
+        with patch_ctx:
+            _run(run_consolidation("mcp", db, config, mock_manager))
+        mock_manager.offload.assert_not_called()
+
+    def test_no_load_base_when_offload_disabled(self, db, config, tmp_path):
+        from groundcortex.consolidator import run_consolidation
+        config.offload_during_training = False
+        _add_pending(db)
+        mock_manager = MagicMock()
+        patch_ctx, _ = _patch_trainer(str(tmp_path / "adapters" / "v1"))
+        with patch_ctx:
+            _run(run_consolidation("mcp", db, config, mock_manager))
+        mock_manager.load_base.assert_not_called()
+
+    def test_hot_swap_still_works_when_offload_disabled(self, db, config, tmp_path):
+        from groundcortex.consolidator import run_consolidation
+        config.offload_during_training = False
+        _add_pending(db)
+        mock_manager = MagicMock()
+        adapter = str(tmp_path / "adapters" / "v1")
+        patch_ctx, _ = _patch_trainer(adapter)
+        with patch_ctx:
+            _run(run_consolidation("mcp", db, config, mock_manager))
+        mock_manager.load_adapter.assert_called_once_with(adapter, "v1")
+        mock_manager.set_active.assert_called_once_with("v1")
+
     def test_training_examples_saved_to_db(self, db, config, tmp_path):
         from groundcortex.consolidator import run_consolidation
         import sqlite3

@@ -37,10 +37,11 @@ def _db(active_run=None, pending=0):
     return db
 
 
-def _mgr(adapters=None, active=None):
+def _mgr(adapters=None, active=None, training=False):
     m = MagicMock()
     m.list_loaded_adapters.return_value = list(adapters or [])
     m.get_active_version.return_value = active
+    m.is_training = training
     return m
 
 

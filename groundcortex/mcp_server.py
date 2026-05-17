@@ -52,6 +52,8 @@ def build_mcp_server(
 
     async def _switch_lora_version(version_id: str) -> dict:
         """Activate a previously trained adapter by version ID (rollback or fast-forward)."""
+        if inference_manager.is_training:
+            return {"status": "error", "message": "Cannot switch adapter: training in progress."}
         run = db.get_run_by_version(version_id)
         if run is None:
             return {"status": "error", "message": f"No training run found for version '{version_id}'."}

@@ -62,6 +62,8 @@ class ChatCompletionRequest(BaseModel):
 async def list_models():
     if _inference_manager is None:
         raise HTTPException(503, "Inference manager not initialized.")
+    if _inference_manager.is_training:
+        raise HTTPException(503, "Model temporarily unavailable: training in progress.")
     adapters = _inference_manager.list_loaded_adapters()
     active = _inference_manager.get_active_version()
     model_list = []
@@ -76,6 +78,8 @@ async def list_models():
 async def chat_completions(request: ChatCompletionRequest):
     if _inference_manager is None:
         raise HTTPException(503, "Inference manager not initialized.")
+    if _inference_manager.is_training:
+        raise HTTPException(503, "Model temporarily unavailable: training in progress.")
     if not _inference_manager.is_ready:
         raise HTTPException(503, "Base model not loaded.")
 

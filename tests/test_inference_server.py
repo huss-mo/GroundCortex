@@ -24,11 +24,12 @@ def reset_server_globals():
     server_mod._config = None
 
 
-def _manager(adapters=None, active=None, ready=True, response="Test response."):
+def _manager(adapters=None, active=None, ready=True, training=False, response="Test response."):
     m = MagicMock()
     m.list_loaded_adapters.return_value = list(adapters or [])
     m.get_active_version.return_value = active
     m.is_ready = ready
+    m.is_training = training
     m.generate.return_value = response
     return m
 
@@ -47,6 +48,12 @@ class TestListModels:
     def test_no_manager_returns_503(self):
         r = TestClient(app, raise_server_exceptions=False).get("/v1/models")
         assert r.status_code == 503
+
+    def test_training_in_progress_returns_503(self):
+        server_mod._inference_manager = _manager(training=True)
+        r = TestClient(app, raise_server_exceptions=False).get("/v1/models")
+        assert r.status_code == 503
+        assert "training in progress" in r.json()["detail"]
 
     def test_returns_200_with_manager(self):
         server_mod._inference_manager = _manager()
@@ -89,6 +96,15 @@ class TestChatCompletions:
             json={"messages": [{"role": "user", "content": "Hi"}]},
         )
         assert r.status_code == 503
+
+    def test_training_in_progress_returns_503(self):
+        server_mod._inference_manager = _manager(training=True)
+        r = TestClient(app, raise_server_exceptions=False).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}]},
+        )
+        assert r.status_code == 503
+        assert "training in progress" in r.json()["detail"]
 
     def test_model_not_ready_returns_503(self):
         server_mod._inference_manager = _manager(ready=False)

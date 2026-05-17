@@ -79,10 +79,14 @@ async def run_consolidation(
         ex.run_id = run.id
     db.save_training_examples(all_examples)
 
-    # 4. Train — offload inference model first to avoid holding two copies in memory
+    # 4. Train
+    # When offload_during_training=True (default): release the inference model
+    # before training so only one copy of the base model is in memory at a time.
+    # When False: trainer loads its own copy — inference stays live at the cost
+    # of 2× base model memory.
     prev_adapter_path: str | None = None
     prev_version: str | None = None
-    if inference_manager is not None:
+    if inference_manager is not None and config.offload_during_training:
         active_run = db.get_active_run()
         if active_run is not None:
             prev_adapter_path = active_run.adapter_path
@@ -94,7 +98,7 @@ async def run_consolidation(
     except Exception as exc:
         db.update_training_run(run.id, status="failed")
         logger.exception("Training failed: %s", exc)
-        if inference_manager is not None:
+        if inference_manager is not None and config.offload_during_training:
             inference_manager.load_base()
             if prev_adapter_path and prev_version:
                 try:
@@ -117,9 +121,10 @@ async def run_consolidation(
     )
     db.set_active_run(run.id)
 
-    # 6. Reload base model then hot-swap new adapter
+    # 6. Hot-swap new adapter (reload base first if it was offloaded)
     if inference_manager is not None:
-        inference_manager.load_base()
+        if config.offload_during_training:
+            inference_manager.load_base()
         inference_manager.load_adapter(adapter_path, version)
         inference_manager.set_active(version)
         logger.info("Hot-swapped to adapter %s", version)

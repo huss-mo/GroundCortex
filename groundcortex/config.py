@@ -28,6 +28,7 @@ class GroundCortexConfig(BaseSettings):
     learning_rate: float = 5e-4
     epochs: int = 25
     batch_size: int = 2
+    offload_during_training: bool = True
 
     # Ingestion - local
     source_paths: list[Path] = []

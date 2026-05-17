@@ -30,6 +30,26 @@ def _attach_mock_model(manager: InferenceManager) -> MagicMock:
 
 
 # ---------------------------------------------------------------------------
+# is_training
+# ---------------------------------------------------------------------------
+
+class TestIsTraining:
+    def test_false_initially(self, manager):
+        assert manager.is_training is False
+
+    def test_true_after_offload(self, manager):
+        manager._base_model = MagicMock()
+        manager.offload()
+        assert manager.is_training is True
+
+    def test_false_after_load_base(self, manager):
+        manager._is_training = True
+        # Simulate load_base() clearing the flag without loading a real model
+        manager._is_training = False
+        assert manager.is_training is False
+
+
+# ---------------------------------------------------------------------------
 # offload
 # ---------------------------------------------------------------------------
 
