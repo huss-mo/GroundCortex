@@ -97,6 +97,7 @@ def test_train_calls_train_model(config, tmp_path):
     expected_iters = math.ceil(len(ds) / config.batch_size) * config.epochs  # ceil(6/2)*3 = 9
 
     mock_model = MagicMock()
+    mock_model.layers = [MagicMock()] * 10
     mock_tokenizer = MagicMock()
     mock_train_set = MagicMock()
 
@@ -116,3 +117,83 @@ def test_train_calls_train_model(config, tmp_path):
     assert args_ns.fine_tune_type == "lora"
     assert args_ns.adapter_path == path
     assert args_ns.lora_parameters["rank"] == config.rank
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# num_lora_layers → args.num_layers
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def _run_mlx_train(config, num_layers: int = 10):
+    """Run MLXTrainer.train() with all external dependencies mocked.
+
+    Returns the SimpleNamespace args passed to train_model.
+    """
+    from datasets import Dataset
+
+    ds = Dataset.from_list(
+        [{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}]
+        * 4
+    )
+    mock_model = MagicMock()
+    mock_model.layers = [MagicMock()] * num_layers
+    mock_tokenizer = MagicMock()
+
+    with (
+        patch("mlx_lm.load", return_value=(mock_model, mock_tokenizer)),
+        patch("mlx_lm.utils.quantize_model", return_value=(mock_model, {})),
+        patch("mlx_lm.lora.train_model") as mock_train_model,
+        patch("mlx_lm.tuner.datasets.ChatDataset", return_value=MagicMock()),
+    ):
+        MLXTrainer(config).train(ds, "v1")
+
+    return mock_train_model.call_args[0][0]
+
+
+def test_num_lora_layers_zero_uses_all_layers(config):
+    config.num_lora_layers = 0
+    args_ns = _run_mlx_train(config, num_layers=10)
+    assert args_ns.num_layers == 10
+
+
+def test_num_lora_layers_cap(config):
+    config.num_lora_layers = 4
+    args_ns = _run_mlx_train(config, num_layers=10)
+    assert args_ns.num_layers == 4
+
+
+def test_num_lora_layers_clamped_to_model_total(config):
+    config.num_lora_layers = 20
+    args_ns = _run_mlx_train(config, num_layers=10)
+    assert args_ns.num_layers == 10
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# gradient_accumulation → args.grad_accumulation_steps
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_gradient_accumulation_passed_to_args(config):
+    config.gradient_accumulation = 4
+    args_ns = _run_mlx_train(config)
+    assert args_ns.grad_accumulation_steps == 4
+
+
+def test_gradient_accumulation_default_is_two(config):
+    args_ns = _run_mlx_train(config)
+    assert args_ns.grad_accumulation_steps == 2
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# hyperparams_snapshot
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_hyperparams_snapshot_includes_num_lora_layers(config):
+    config.num_lora_layers = 8
+    assert MLXTrainer(config).hyperparams_snapshot()["num_lora_layers"] == 8
+
+
+def test_hyperparams_snapshot_includes_gradient_accumulation(config):
+    config.gradient_accumulation = 4
+    assert MLXTrainer(config).hyperparams_snapshot()["gradient_accumulation"] == 4

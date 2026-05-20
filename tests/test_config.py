@@ -25,6 +25,8 @@ class TestDefaults:
         assert cfg.learning_rate == pytest.approx(5e-4)
         assert cfg.epochs == 25
         assert cfg.batch_size == 2
+        assert cfg.gradient_accumulation == 2
+        assert cfg.num_lora_layers == 0
 
     def test_ports(self, tmp_path):
         cfg = _cfg(tmp_path)

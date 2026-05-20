@@ -191,7 +191,7 @@ class LoRATrainer:
                 assistant_only_loss=True,
                 max_length=512,
                 per_device_train_batch_size=cfg.batch_size,
-                gradient_accumulation_steps=2,
+                gradient_accumulation_steps=cfg.gradient_accumulation,
                 warmup_steps=10,
                 num_train_epochs=cfg.epochs,
                 learning_rate=cfg.learning_rate,
@@ -224,6 +224,7 @@ class LoRATrainer:
             "device": self._device,
             "use_qlora": cfg.use_qlora,
             "num_lora_layers": cfg.num_lora_layers,
+            "gradient_accumulation": cfg.gradient_accumulation,
         }
 
 

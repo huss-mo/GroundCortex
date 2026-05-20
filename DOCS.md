@@ -392,7 +392,8 @@ The hyperparameters below are the values validated by `examples/hypothesis.py`. 
 | `alpha` | 64 | `alpha = 2 × rank` is the standard convention; keeps effective LoRA scaling at 2×. |
 | `learning_rate` | 5e-4 | Slightly aggressive vs the typical 3e-4 - required to overcome deeply encoded pretrained priors. |
 | `epochs` | 25 | With a small dataset (~34 examples) and effective batch size 4, 3 epochs gave 15 gradient steps (0/5 recall). 25 epochs gives ~225 steps (5/5 recall). |
-| `batch_size` | 2 | Effective batch size = `batch_size × gradient_accumulation = 2 × 2 = 4`. Smaller effective batch means more frequent gradient updates for tiny datasets. |
+| `batch_size` | 2 | Per-device batch size. Effective batch size = `batch_size × gradient_accumulation`. |
+| `gradient_accumulation` | 2 | Gradient accumulation steps. Effective batch size = `2 × 2 = 4`. Validated minimum for the default 2B model; increase if memory allows, decrease if OOM. |
 
 ---
 
@@ -922,6 +923,7 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 | `GROUNDCORTEX_LEARNING_RATE` | Learning rate | `5e-4` |
 | `GROUNDCORTEX_EPOCHS` | Training epochs | `25` |
 | `GROUNDCORTEX_BATCH_SIZE` | Per-device training batch size | `2` |
+| `GROUNDCORTEX_GRADIENT_ACCUMULATION` | Gradient accumulation steps. Effective batch size = `batch_size × gradient_accumulation`. | `2` |
 | `GROUNDCORTEX_OFFLOAD_DURING_TRAINING` | Release inference model from memory before training, keeping peak memory at 1× base model. When `false`, the trainer loads a second copy simultaneously - only viable with enough VRAM for two copies. Inference and MCP endpoints return 503 during training when this is `true`. | `true` |
 | `GROUNDCORTEX_USE_QLORA` | Enable 4-bit quantized LoRA. **CUDA**: uses torchao `Int4WeightOnlyConfig` (tinygemm kernels). **macOS / Apple Silicon**: auto-routes to mlx-lm when `use_qlora=true` and the `.[mlx]` extra is installed - see [macOS (Apple Silicon) - 4-bit QLoRA](#macos-apple-silicon--4-bit-qlora). **CPU / MPS without mlx-lm**: fp16 fallback (no quantization, gradient checkpointing still enabled). | `false` |
 | `GROUNDCORTEX_NUM_LORA_LAYERS` | Number of top model layers to apply LoRA to. `0` = all layers. Limiting this has two effects: (1) **OOM prevention** - large MoE models create `O(n_experts × rank)` trainable parameters per layer; Adam's optimizer state can exceed available device memory when all layers are targeted; (2) **overfitting prevention** - with small training datasets, fewer trainable parameters prevents the model from fully memorizing training examples, which preserves general capabilities. | `0` |

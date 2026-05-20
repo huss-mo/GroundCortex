@@ -30,7 +30,7 @@ def _add_pending(db, content="A fact.") -> Experience:
 
 
 def _patch_trainer(adapter_path: str, fail: bool = False):
-    """Return a context manager that patches LoRATrainer with a mock."""
+    """Return a context manager that patches create_trainer with a mock."""
     mock = MagicMock()
     instance = MagicMock()
     instance.hyperparams_snapshot.return_value = {"rank": 32}
@@ -39,7 +39,7 @@ def _patch_trainer(adapter_path: str, fail: bool = False):
     else:
         instance.train.return_value = adapter_path
     mock.return_value = instance
-    return patch("groundcortex.consolidator.LoRATrainer", mock), instance
+    return patch("groundcortex.consolidator.create_trainer", mock), instance
 
 
 # ---------------------------------------------------------------------------

@@ -79,7 +79,7 @@ class MLXTrainer:
             resume_adapter_file=None,
             max_seq_length=512,
             grad_checkpoint=True,
-            grad_accumulation_steps=1,
+            grad_accumulation_steps=cfg.gradient_accumulation,
             seed=0,
             report_to=None,
             project_name="",
@@ -104,4 +104,6 @@ class MLXTrainer:
             "use_qlora": True,
             "backend": "mlx",
             "bits": 4,
+            "num_lora_layers": cfg.num_lora_layers,
+            "gradient_accumulation": cfg.gradient_accumulation,
         }
