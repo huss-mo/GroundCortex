@@ -170,6 +170,14 @@ When both conditions are met (macOS + `use_qlora=true`), GroundCortex automatica
 
 Without the `.[mlx]` extra, `use_qlora=true` on macOS falls back to fp16 (no quantization).
 
+**Large models and memory:** `mlx_lm.load()` loads the model in bf16 before quantizing, so the peak memory during load is the full bf16 size (e.g. ~70 GB for a 35B model). On Macs where this exceeds available unified memory, use a pre-quantized model from the `mlx-community` organization instead - these load directly at int4 size (~18 GB for 35B):
+
+```env
+GROUNDCORTEX_MODEL_NAME=mlx-community/Qwen3.6-35B-A3B-4bit
+```
+
+This applies only when `use_qlora=true` on macOS. The pre-quantized model is already in int4 format so GroundCortex skips the `quantize_model()` step automatically.
+
 ### Network Access
 
 Both servers bind to `127.0.0.1` by default (localhost only). This is safe for single-machine use and requires no configuration.

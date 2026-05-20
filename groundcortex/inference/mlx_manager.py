@@ -46,8 +46,14 @@ class MLXInferenceManager:
         self._is_training = False
         cfg = self._config
         logger.info("Loading base model (MLX 4-bit): %s", cfg.model_name)
+        import mlx.nn as nn
         model, tokenizer = mlx_lm.load(cfg.model_name)
-        self._model, _ = quantize_model(model, config={}, group_size=64, bits=4)
+        already_quantized = any(
+            isinstance(m, nn.QuantizedLinear) for _, m in model.named_modules()
+        )
+        if not already_quantized:
+            model, _ = quantize_model(model, config={}, group_size=64, bits=4)
+        self._model = model
         self._tokenizer = tokenizer
         self._lora_applied = False
         logger.info("Base model loaded (MLX).")

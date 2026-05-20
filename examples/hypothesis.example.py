@@ -336,7 +336,12 @@ def _load_model_mlx(model_name: str):
         )
     print(f"  Loading via mlx-lm (int4, Apple Silicon)...")
     model, tokenizer = mlx_lm.load(model_name)
-    model, _ = quantize_model(model, config={}, group_size=64, bits=4)
+    import mlx.nn as nn
+    already_quantized = any(
+        isinstance(m, nn.QuantizedLinear) for _, m in model.named_modules()
+    )
+    if not already_quantized:
+        model, _ = quantize_model(model, config={}, group_size=64, bits=4)
     return model, tokenizer
 
 

@@ -33,8 +33,13 @@ class MLXTrainer:
         from mlx_lm.utils import quantize_model
 
         cfg = self._config
+        import mlx.nn as nn
         model, tokenizer = mlx_lm.load(cfg.model_name)
-        model, _ = quantize_model(model, config={}, group_size=64, bits=4)
+        already_quantized = any(
+            isinstance(m, nn.QuantizedLinear) for _, m in model.named_modules()
+        )
+        if not already_quantized:
+            model, _ = quantize_model(model, config={}, group_size=64, bits=4)
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         adapter_dir = str(cfg.output_dir / f"{version}_{timestamp}")
