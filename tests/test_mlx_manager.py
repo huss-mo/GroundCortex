@@ -154,6 +154,46 @@ def test_generate_raises_without_model(config):
 
 
 # ──────────────────────────────────────────────────────────────────────────────
+# unload_adapter
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+def test_unload_adapter_clears_active_version(config):
+    mgr = MLXInferenceManager(config)
+    _attach_mock_model(mgr)
+    mgr._active_version = "v1"
+    mgr._lora_applied = False
+    mgr.unload_adapter()
+    assert mgr.get_active_version() is None
+
+
+def test_unload_adapter_zeros_lora_scales(config):
+    mgr = MLXInferenceManager(config)
+    _attach_mock_model(mgr)
+    mgr._lora_applied = True
+    mgr._active_version = "v1"
+
+    fake_layer = MagicMock()
+    fake_layer.scale = 1.0
+
+    with patch(
+        "groundcortex.inference.mlx_manager._iter_lora_layers",
+        return_value=[fake_layer],
+    ):
+        mgr.unload_adapter()
+
+    assert fake_layer.scale == 0.0
+    assert mgr.get_active_version() is None
+
+
+def test_unload_adapter_no_lora_applied_is_safe(config):
+    mgr = MLXInferenceManager(config)
+    _attach_mock_model(mgr)
+    mgr._lora_applied = False
+    mgr.unload_adapter()  # must not raise
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 # offload
 # ──────────────────────────────────────────────────────────────────────────────
 

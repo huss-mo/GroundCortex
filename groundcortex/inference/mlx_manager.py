@@ -86,9 +86,19 @@ class MLXInferenceManager:
         if version_id not in self._adapter_paths:
             raise ValueError(f"Adapter '{version_id}' not loaded. Load it first.")
         # LoRA structure is already in place; only the weights need to change.
+        # _swap_weights reloads checkpoint weights (including scales), so this
+        # also re-enables adapters that were zeroed by unload_adapter().
         self._swap_weights(self._adapter_paths[version_id])
         self._active_version = version_id
         logger.info("MLX active adapter set to %s", version_id)
+
+    def unload_adapter(self) -> None:
+        """Zero LoRA scales so generation uses base weights only."""
+        if self._lora_applied:
+            for m in _iter_lora_layers(self._model):
+                m.scale = 0.0
+        self._active_version = None
+        logger.info("MLX LoRA adapters disabled; running on base model.")
 
     def generate(
         self,

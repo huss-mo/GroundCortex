@@ -83,9 +83,18 @@ class InferenceManager:
             raise RuntimeError("No adapters loaded.")
         if version_id not in self._loaded_adapters:
             raise ValueError(f"Adapter '{version_id}' not loaded. Load it first.")
+        # Re-enable adapter layers in case unload_adapter() disabled them.
+        self._model.enable_adapter_layers()
         self._model.set_adapter(version_id)
         self._active_version = version_id
         logger.info("Active adapter set to %s", version_id)
+
+    def unload_adapter(self) -> None:
+        """Disable LoRA adapters so generation uses the base model only."""
+        if self._model is not None:
+            self._model.disable_adapter_layers()
+        self._active_version = None
+        logger.info("LoRA adapters disabled; running on base model.")
 
     def _run_generate(
         self,

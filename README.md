@@ -144,9 +144,32 @@ Four tools are exposed by the MCP server. Each can be selectively enabled or dis
 | `trigger_consolidation` | Ingest all source files, train a new adapter if anything changed, and hot-swap it into the inference server. Returns the new version ID and training status. |
 | `get_cortex_status` | Returns the active adapter version, pending experience count, loaded adapters list, and last training run details. |
 | `list_adapters` | List all successfully trained adapters with their version names and negative indices for easy switching. |
-| `switch_adapter` | Activate a previously trained adapter by version name or negative index (-1 = latest). Useful for rollback or testing prior versions. |
+| `switch_adapter` | Activate a previously trained adapter by version name, negative index (-1 = latest), or `"base"` to unload LoRA and revert to the base model. Useful for rollback or testing prior versions. |
 
 For client configuration and tool parameters, see [DOCS.md - MCP Server](DOCS.md#mcp-server).
+
+---
+
+## CLI Commands
+
+These commands let you manage adapters from the terminal. `--list`, `--status`, and `--delete`
+read the local database directly and work without the server running. `--switch` requires the
+server to be running.
+
+| Command | Effect |
+|---|---|
+| `python -m groundcortex --switch v2` | Load adapter v2 into the running server |
+| `python -m groundcortex --switch -1` | Switch to the most recently trained adapter |
+| `python -m groundcortex --switch -2` | Switch to the second-to-last adapter |
+| `python -m groundcortex --switch base` | Unload LoRA, revert to base model |
+| `python -m groundcortex --list` | Print all non-deleted adapters with indices |
+| `python -m groundcortex --status` | Show active adapter and pending experience count |
+| `python -m groundcortex --delete v1` | Soft-delete adapter v1 (removes files, keeps DB lineage) |
+
+Adapters with `status = deleted` are excluded from negative index resolution, so `-1` always
+refers to the latest non-deleted adapter.
+
+For full details, see [DOCS.md - CLI Commands](DOCS.md#cli-commands).
 
 ---
 

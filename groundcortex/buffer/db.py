@@ -216,6 +216,19 @@ class Database:
             con.execute("UPDATE training_runs SET is_active = 0")
             con.execute("UPDATE training_runs SET is_active = 1 WHERE id = ?", (run_id,))
 
+    def unset_active_run(self) -> None:
+        """Clear is_active on all runs (no adapter active = base model)."""
+        with self._conn() as con:
+            con.execute("UPDATE training_runs SET is_active = 0")
+
+    def mark_deleted(self, run_id: str) -> None:
+        """Soft-delete: mark status='deleted' and clear is_active."""
+        with self._conn() as con:
+            con.execute(
+                "UPDATE training_runs SET status = 'deleted', is_active = 0 WHERE id = ?",
+                (run_id,),
+            )
+
     def get_active_run(self) -> TrainingRun | None:
         with self._conn() as con:
             row = con.execute(

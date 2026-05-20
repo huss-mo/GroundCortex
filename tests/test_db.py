@@ -220,6 +220,40 @@ class TestTrainingRuns:
         assert runs[0].version == "v2"
         assert runs[1].version == "v1"
 
+    def test_unset_active_run_clears_active(self, db):
+        run = _run(version="v1")
+        db.create_training_run(run)
+        db.set_active_run(run.id)
+        assert db.get_active_run() is not None
+        db.unset_active_run()
+        assert db.get_active_run() is None
+
+    def test_unset_active_run_on_empty_db_is_safe(self, db):
+        db.unset_active_run()  # must not raise
+
+    def test_mark_deleted_sets_status(self, db):
+        run = _run(version="v1")
+        db.create_training_run(run)
+        db.mark_deleted(run.id)
+        loaded = db.get_run_by_id(run.id)
+        assert loaded.status == "deleted"
+
+    def test_mark_deleted_clears_is_active(self, db):
+        run = _run(version="v1")
+        db.create_training_run(run)
+        db.set_active_run(run.id)
+        db.mark_deleted(run.id)
+        assert db.get_active_run() is None
+
+    def test_mark_deleted_run_excluded_from_complete_runs(self, db):
+        r1 = _run(version="v1")
+        r2 = _run(version="v2")
+        db.create_training_run(r1)
+        db.create_training_run(r2)
+        db.mark_deleted(r1.id)
+        runs = [r for r in reversed(db.list_runs()) if r.status == "complete"]
+        assert all(r.version != "v1" for r in runs)
+
     def test_run_round_trips_trigger_field(self, db):
         run = _run(version="v1", trigger="cron")
         db.create_training_run(run)

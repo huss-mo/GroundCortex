@@ -226,6 +226,25 @@ class TestSwitchLoraVersion:
         mgr.load_adapter.assert_not_called()
 
 
+    def test_switch_base_unloads_adapter(self, tmp_path):
+        mgr = _mgr(active="v1")
+        db = MagicMock()
+        db.unset_active_run = MagicMock()
+        mcp = build_mcp_server(_cfg(tmp_path, ["switch_adapter"]), db, mgr)
+        result = _parse(_run(mcp.call_tool("switch_adapter", {"version_id": "base"})))
+        assert result["status"] == "ok"
+        assert result["active_version"] is None
+        mgr.unload_adapter.assert_called_once()
+        db.unset_active_run.assert_called_once()
+
+    def test_switch_base_returns_previous_version(self, tmp_path):
+        mgr = _mgr(active="v2")
+        db = MagicMock()
+        mcp = build_mcp_server(_cfg(tmp_path, ["switch_adapter"]), db, mgr)
+        result = _parse(_run(mcp.call_tool("switch_adapter", {"version_id": "base"})))
+        assert result["previous_version"] == "v2"
+
+
 def _make_runs(*versions: str) -> list[TrainingRun]:
     """Build a list of complete TrainingRun objects for the given version names."""
     return [

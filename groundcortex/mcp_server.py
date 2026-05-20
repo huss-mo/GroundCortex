@@ -99,9 +99,10 @@ def build_mcp_server(
     async def _switch_adapter(version_id: str) -> dict:
         """Activates a previously trained adapter by version name or negative index.
 
-        version_id can be a version name (e.g. "v3") or a negative index as a
-        string ("-1" = most recent, "-2" = one before, etc.). Call list_adapters
-        first to see available versions and their indices.
+        version_id can be a version name (e.g. "v3"), a negative index as a
+        string ("-1" = most recent, "-2" = one before, etc.), or "base" to
+        unload LoRA and revert to the base model. Call list_adapters first to
+        see available versions and their indices.
 
         Use this to roll back if a recent consolidation produced unexpected results,
         or to compare specific knowledge versions. Cannot be called while training
@@ -109,6 +110,12 @@ def build_mcp_server(
         """
         if inference_manager.is_training:
             return {"status": "error", "message": "Cannot switch adapter: training in progress."}
+
+        if version_id.lower() == "base":
+            previous = inference_manager.get_active_version()
+            inference_manager.unload_adapter()
+            db.unset_active_run()
+            return {"status": "ok", "active_version": None, "previous_version": previous}
 
         # Resolve negative index to a concrete run
         run = None
@@ -133,18 +140,21 @@ def build_mcp_server(
         if run.status != "complete":
             return {"status": "error", "message": f"Version '{version_id}' is not complete (status: {run.status})."}
 
+        current = inference_manager.get_active_version()
+        if version_id == current:
+            return {"status": "ok", "active_version": version_id, "previous_version": version_id, "noop": True}
+
         loaded = inference_manager.list_loaded_adapters()
         if version_id not in loaded:
             inference_manager.load_adapter(run.adapter_path, version_id)
 
-        previous = inference_manager.get_active_version()
         inference_manager.set_active(version_id)
         db.set_active_run(run.id)
 
         return {
             "status": "ok",
             "active_version": version_id,
-            "previous_version": previous,
+            "previous_version": current,
         }
 
     # ── Conditional tool registration ─────────────────────────────────────────
@@ -153,7 +163,7 @@ def build_mcp_server(
         "trigger_consolidation": (_trigger_consolidation, "Ingest sources and train a new LoRA if anything changed."),
         "get_cortex_status": (_get_cortex_status, "Return active adapter, pending count, and last run info."),
         "list_adapters": (_list_adapters, "List all trained adapters with their version names and negative indices."),
-        "switch_adapter": (_switch_adapter, "Activate a trained adapter by version name (e.g. 'v2') or negative index (-1 = latest)."),
+        "switch_adapter": (_switch_adapter, "Activate a trained adapter by version name (e.g. 'v2'), negative index (-1 = latest), or 'base' to unload LoRA."),
     }
 
     for name, (fn, _description) in _all_tools.items():

@@ -45,7 +45,7 @@ class TrainingRun(BaseModel):
     experience_ids: list[str] = Field(default_factory=list)
     hyperparams: dict = Field(default_factory=dict)
     metrics: dict | None = None                   # {recall_pct, reasoning_pct, sanity_score}
-    status: Literal["training", "complete", "failed"] = "training"
+    status: Literal["training", "complete", "failed", "deleted"] = "training"
     is_active: bool = False
     created_at: str = Field(default_factory=_now)
     completed_at: str | None = None

@@ -87,6 +87,35 @@ class TestOffload:
 # generate_base
 # ---------------------------------------------------------------------------
 
+class TestUnloadAdapter:
+    def test_unload_adapter_clears_active_version(self, manager):
+        manager._base_model = MagicMock()
+        mock_peft = MagicMock()
+        manager._model = mock_peft
+        manager._active_version = "v1"
+        manager.unload_adapter()
+        assert manager.get_active_version() is None
+
+    def test_unload_adapter_calls_disable_adapter_layers(self, manager):
+        manager._base_model = MagicMock()
+        mock_peft = MagicMock()
+        manager._model = mock_peft
+        manager.unload_adapter()
+        mock_peft.disable_adapter_layers.assert_called_once()
+
+    def test_unload_adapter_no_model_is_safe(self, manager):
+        manager.unload_adapter()  # must not raise
+
+    def test_set_active_enables_adapter_layers_before_switching(self, manager):
+        manager._base_model = MagicMock()
+        mock_peft = MagicMock()
+        manager._model = mock_peft
+        manager._loaded_adapters = ["v1"]
+        manager.set_active("v1")
+        mock_peft.enable_adapter_layers.assert_called_once()
+        mock_peft.set_adapter.assert_called_once_with("v1")
+
+
 class TestGenerateBase:
     def test_raises_if_base_not_loaded(self, manager):
         with pytest.raises(RuntimeError, match="load_base"):

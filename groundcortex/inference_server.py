@@ -8,6 +8,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from groundcortex.buffer.db import Database
 from groundcortex.config import GroundCortexConfig
 from groundcortex.inference.manager import InferenceManager
 
@@ -16,12 +17,14 @@ app = FastAPI(title="GroundCortex Inference", version="1.0.0")
 # Set at startup by __main__.py
 _inference_manager: InferenceManager | None = None
 _config: GroundCortexConfig | None = None
+_db: Database | None = None
 
 
-def init(manager: InferenceManager, config: GroundCortexConfig) -> None:
-    global _inference_manager, _config
+def init(manager: InferenceManager, config: GroundCortexConfig, db: Database) -> None:
+    global _inference_manager, _config, _db
     _inference_manager = manager
     _config = config
+    _db = db
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -135,3 +138,68 @@ async def chat_completions(request: ChatCompletionRequest):
         }],
         "usage": {"prompt_tokens": -1, "completion_tokens": -1, "total_tokens": -1},
     }
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Adapter control (used by the CLI --switch command)
+# ──────────────────────────────────────────────────────────────────────────────
+
+class SwitchRequest(BaseModel):
+    version: str
+
+
+def _complete_runs_asc():
+    """Complete, non-deleted runs sorted oldest-first for index resolution."""
+    return [r for r in reversed(_db.list_runs()) if r.status == "complete"]
+
+
+@app.post("/v1/control/switch")
+async def switch_adapter(req: SwitchRequest):
+    if _inference_manager is None or _db is None:
+        raise HTTPException(503, "Server not initialized.")
+    if _inference_manager.is_training:
+        raise HTTPException(503, "Cannot switch adapter: training in progress.")
+
+    version = req.version
+
+    if version.lower() == "base":
+        previous = _inference_manager.get_active_version()
+        _inference_manager.unload_adapter()
+        _db.unset_active_run()
+        return {"status": "ok", "active_version": None, "previous_version": previous}
+
+    # Resolve negative index or version name
+    run = None
+    try:
+        idx = int(version)
+        if idx < 0:
+            complete = _complete_runs_asc()
+            if abs(idx) > len(complete):
+                raise HTTPException(
+                    404,
+                    f"Index {idx} out of range: only {len(complete)} complete version(s) exist.",
+                )
+            run = complete[idx]
+            version = run.version
+    except ValueError:
+        pass
+
+    if run is None:
+        run = _db.get_run_by_version(version)
+    if run is None:
+        raise HTTPException(404, f"No training run found for version '{version}'.")
+    if run.status != "complete":
+        raise HTTPException(409, f"Version '{version}' is not complete (status: {run.status}).")
+
+    current = _inference_manager.get_active_version()
+    if version == current:
+        return {"status": "ok", "active_version": version, "previous_version": version, "noop": True}
+
+    loaded = _inference_manager.list_loaded_adapters()
+    if version not in loaded:
+        _inference_manager.load_adapter(run.adapter_path, version)
+
+    _inference_manager.set_active(version)
+    _db.set_active_run(run.id)
+
+    return {"status": "ok", "active_version": version, "previous_version": current}

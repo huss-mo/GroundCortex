@@ -58,6 +58,7 @@ For a project overview and quick start, see [README.md](README.md).
     - [Data Flow](#data-flow)
   - [Tech Stack](#tech-stack)
   - [Configuration Reference](#configuration-reference)
+  - [CLI Commands](#cli-commands)
 
 ---
 
@@ -965,3 +966,80 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 ```
 environment variables  >  .env file  >  built-in defaults
 ```
+
+---
+
+## CLI Commands
+
+GroundCortex ships a small CLI for managing adapters without an MCP client. When any of these
+flags are passed, no server is started — the command runs and exits.
+
+### `--list`
+
+```bash
+python -m groundcortex --list
+```
+
+Prints all non-deleted trained adapters in chronological order (oldest first). Reads the local
+database directly — no server required.
+
+Example output:
+```
+ INDEX  VERSION     ACTIVE  CREATED
+    -3  v1                  2026-05-15T10:00:00
+    -2  v2                  2026-05-16T14:30:00
+    -1  v3          yes     2026-05-17T09:00:00
+```
+
+### `--status`
+
+```bash
+python -m groundcortex --status
+```
+
+Shows the active adapter version, pending experience count, total adapter count, and last
+training timestamp. Reads the local database — no server required.
+
+### `--switch VERSION`
+
+```bash
+python -m groundcortex --switch v2       # by version name
+python -m groundcortex --switch -1       # most recently trained adapter
+python -m groundcortex --switch -2       # second-to-last adapter
+python -m groundcortex --switch base     # unload LoRA, revert to base model
+```
+
+Sends a request to the running inference server to switch adapters. **Requires the server to be
+running.** Exits with an error and a clear message if the server is not reachable.
+
+Negative indices count backwards from the most recently trained non-deleted adapter: `-1` is the
+latest, `-2` is one before that, etc.
+
+`"base"` unloads LoRA entirely so the next generation request uses the raw base model weights.
+This does not reload the model — adapters remain loaded in memory and can be re-enabled with any
+subsequent `--switch <version>` call. The same `"base"` value is also accepted by the MCP
+`switch_adapter` tool.
+
+Auth: if `GROUNDCORTEX_INFERENCE_API_KEY` is set, the CLI reads it from `.env` and passes it
+automatically.
+
+### `--delete VERSION`
+
+```bash
+python -m groundcortex --delete v1
+python -m groundcortex --delete -3
+```
+
+Soft-deletes an adapter: marks it `status = deleted` in the database and removes the adapter
+files from disk. The database row is kept so version numbering history is preserved. No server
+required.
+
+**Refuses to delete the currently active adapter.** Switch to another adapter or `base` first:
+
+```bash
+python -m groundcortex --switch base
+python -m groundcortex --delete v1
+```
+
+Deleted adapters are excluded from negative index resolution, so `-1` always refers to the latest
+non-deleted, complete adapter.

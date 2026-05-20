@@ -6,14 +6,20 @@ Starts three concurrent services in a single asyncio event loop:
   3. APScheduler     - cron-triggered automatic consolidation (if enabled)
 
 Usage:
-    python -m groundcortex
-    python -m groundcortex --help
+    python -m groundcortex                    # start the server
+    python -m groundcortex --switch v2        # switch active adapter
+    python -m groundcortex --switch -1        # switch to latest adapter
+    python -m groundcortex --switch base      # unload LoRA, use base model
+    python -m groundcortex --list             # list trained adapters
+    python -m groundcortex --status           # show server status
+    python -m groundcortex --delete v1        # soft-delete an adapter
 """
 from __future__ import annotations
 
 import asyncio
 import logging
 import os
+import sys
 
 import uvicorn
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -60,6 +66,117 @@ logging.basicConfig(
 logger = logging.getLogger("groundcortex")
 
 
+# ──────────────────────────────────────────────────────────────────────────────
+# CLI helper functions (no server required except --switch)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _complete_runs_asc(db):
+    """Complete, non-deleted runs sorted oldest-first."""
+    return [r for r in reversed(db.list_runs()) if r.status == "complete"]
+
+
+def _resolve_version(version_arg: str, runs):
+    """Return the TrainingRun matching a version name or negative index, or None."""
+    try:
+        idx = int(version_arg)
+        if idx < 0:
+            return runs[idx] if abs(idx) <= len(runs) else None
+    except ValueError:
+        pass
+    return next((r for r in runs if r.version == version_arg), None)
+
+
+def _cli_switch(config, version: str) -> None:
+    import json
+    import urllib.error
+    import urllib.request
+
+    # Use 127.0.0.1 when the configured host is 0.0.0.0 (bind-all address).
+    connect_host = "127.0.0.1" if config.inference_host in ("0.0.0.0", "::") else config.inference_host
+    url = f"http://{connect_host}:{config.inference_port}/v1/control/switch"
+    headers = {"Content-Type": "application/json"}
+    if config.inference_api_key:
+        headers["Authorization"] = f"Bearer {config.inference_api_key}"
+
+    data = json.dumps({"version": version}).encode()
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            body = json.loads(resp.read())
+        active = body.get("active_version") or "base"
+        prev = body.get("previous_version") or "base"
+        if body.get("noop"):
+            print(f"Already active: {active}")
+        else:
+            print(f"Switched: {prev} → {active}")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        try:
+            detail = json.loads(raw).get("detail", exc.reason)
+        except Exception:
+            detail = exc.reason or f"HTTP {exc.code}"
+        print(f"Error: {detail}", file=sys.stderr)
+        sys.exit(1)
+    except (urllib.error.URLError, OSError):
+        print(
+            "Error: Server is not running. Start it with: python -m groundcortex",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
+def _cli_delete(config, version_arg: str) -> None:
+    import shutil
+
+    db = Database(config.buffer_db)
+    runs = _complete_runs_asc(db)
+    run = _resolve_version(version_arg, runs)
+    if run is None:
+        print(f"Error: No complete adapter found for '{version_arg}'.", file=sys.stderr)
+        sys.exit(1)
+    if run.is_active:
+        print(
+            f"Error: Adapter '{run.version}' is currently active. "
+            "Switch to another adapter or base first:\n"
+            f"  python -m groundcortex --switch base",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+    db.mark_deleted(run.id)
+    try:
+        shutil.rmtree(run.adapter_path, ignore_errors=False)
+    except FileNotFoundError:
+        pass
+    print(f"Deleted adapter {run.version} ({run.adapter_path}).")
+
+
+def _cli_list(config) -> None:
+    db = Database(config.buffer_db)
+    runs = _complete_runs_asc(db)
+    if not runs:
+        print("No trained adapters.")
+        return
+    n = len(runs)
+    print(f"{'INDEX':>6}  {'VERSION':<10}  {'ACTIVE':<6}  {'CREATED'}")
+    for i, run in enumerate(runs):
+        idx = i - n
+        active_flag = "yes" if run.is_active else ""
+        print(f"{idx:>6}  {run.version:<10}  {active_flag:<6}  {run.created_at}")
+
+
+def _cli_status(config) -> None:
+    db = Database(config.buffer_db)
+    active = db.get_active_run()
+    pending = db.count_pending()
+    runs = _complete_runs_asc(db)
+    print(f"Active adapter : {active.version if active else 'none (base model)'}")
+    print(f"Pending count  : {pending}")
+    print(f"Total adapters : {len(runs)}")
+    if runs:
+        last = runs[-1]
+        print(f"Last trained   : {last.version} at {last.completed_at or last.created_at}")
+
+
 async def main() -> None:
     config = GroundCortexConfig()
     db = Database(config.buffer_db)
@@ -81,7 +198,7 @@ async def main() -> None:
 
     # ── MCP server ─────────────────────────────────────────────────────────────
     mcp = build_mcp_server(config, db, inference_manager)
-    init_inference(inference_manager, config)
+    init_inference(inference_manager, config, db)
 
     # ── Cron scheduler ─────────────────────────────────────────────────────────
     async def _cron_consolidation() -> None:
@@ -130,6 +247,49 @@ async def main() -> None:
 
 
 def main_sync() -> None:
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        prog="groundcortex",
+        description="GroundCortex — start the server or manage adapters from the CLI.",
+    )
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument(
+        "--switch",
+        metavar="VERSION",
+        help="Switch active adapter. Accepts version name (v2), negative index (-1), or 'base'.",
+    )
+    group.add_argument(
+        "--delete",
+        metavar="VERSION",
+        help="Soft-delete an adapter. Accepts version name or negative index.",
+    )
+    group.add_argument(
+        "--list",
+        action="store_true",
+        help="List all trained (non-deleted) adapters.",
+    )
+    group.add_argument(
+        "--status",
+        action="store_true",
+        help="Show active adapter and pending experience count.",
+    )
+    args = parser.parse_args()
+
+    # CLI mode: load config only (no model, no servers)
+    if args.switch or args.delete or args.list or args.status:
+        from groundcortex.config import GroundCortexConfig as _Cfg
+        cfg = _Cfg()
+        if args.switch:
+            _cli_switch(cfg, args.switch)
+        elif args.delete:
+            _cli_delete(cfg, args.delete)
+        elif args.list:
+            _cli_list(cfg)
+        elif args.status:
+            _cli_status(cfg)
+        return
+
     asyncio.run(main())
 
 

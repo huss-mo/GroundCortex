@@ -19,9 +19,11 @@ def reset_server_globals():
     """Restore module-level globals to None before and after each test."""
     server_mod._inference_manager = None
     server_mod._config = None
+    server_mod._db = None
     yield
     server_mod._inference_manager = None
     server_mod._config = None
+    server_mod._db = None
 
 
 def _manager(adapters=None, active=None, ready=True, training=False, response="Test response."):
@@ -240,3 +242,103 @@ class TestBearerAuth:
             "/v1/models", headers={"Authorization": "secret"}  # missing "Bearer "
         )
         assert r.status_code == 401
+
+
+# ---------------------------------------------------------------------------
+# POST /v1/control/switch
+# ---------------------------------------------------------------------------
+
+from groundcortex.pipeline.models import TrainingRun
+
+
+def _db_mock(runs=None, active_run=None):
+    db = MagicMock()
+    db.list_runs.return_value = list(reversed(runs or []))
+    db.get_active_run.return_value = active_run
+    db.get_run_by_version.side_effect = lambda v: next(
+        (r for r in (runs or []) if r.version == v), None
+    )
+    return db
+
+
+def _switch_run(version="v1", status="complete", adapter_path="/adapters/v1"):
+    return TrainingRun(version=version, trigger="mcp", adapter_path=adapter_path, status=status)
+
+
+class TestControlSwitch:
+    def _setup(self, runs=None, adapters=None, training=False):
+        server_mod._inference_manager = _manager(adapters=adapters or [], training=training)
+        server_mod._db = _db_mock(runs=runs or [])
+
+    def test_no_server_init_returns_503(self):
+        r = TestClient(app, raise_server_exceptions=False).post(
+            "/v1/control/switch", json={"version": "v1"}
+        )
+        assert r.status_code == 503
+
+    def test_training_in_progress_returns_503(self):
+        self._setup(training=True)
+        r = TestClient(app, raise_server_exceptions=False).post(
+            "/v1/control/switch", json={"version": "v1"}
+        )
+        assert r.status_code == 503
+
+    def test_switch_base_calls_unload_adapter(self):
+        self._setup()
+        r = TestClient(app).post("/v1/control/switch", json={"version": "base"})
+        assert r.status_code == 200
+        server_mod._inference_manager.unload_adapter.assert_called_once()
+        server_mod._db.unset_active_run.assert_called_once()
+
+    def test_switch_base_returns_none_active(self):
+        self._setup()
+        body = TestClient(app).post("/v1/control/switch", json={"version": "base"}).json()
+        assert body["active_version"] is None
+
+    def test_switch_by_version_name_returns_ok(self):
+        runs = [_switch_run("v1")]
+        self._setup(runs=runs, adapters=["v1"])
+        body = TestClient(app).post("/v1/control/switch", json={"version": "v1"}).json()
+        assert body["status"] == "ok"
+        assert body["active_version"] == "v1"
+
+    def test_switch_by_negative_index_resolves_correctly(self):
+        runs = [_switch_run("v1"), _switch_run("v2"), _switch_run("v3")]
+        self._setup(runs=runs, adapters=["v1", "v2", "v3"])
+        body = TestClient(app).post("/v1/control/switch", json={"version": "-1"}).json()
+        assert body["active_version"] == "v3"
+
+    def test_unknown_version_returns_404(self):
+        self._setup()
+        r = TestClient(app, raise_server_exceptions=False).post(
+            "/v1/control/switch", json={"version": "v99"}
+        )
+        assert r.status_code == 404
+
+    def test_out_of_range_index_returns_404(self):
+        runs = [_switch_run("v1")]
+        self._setup(runs=runs)
+        r = TestClient(app, raise_server_exceptions=False).post(
+            "/v1/control/switch", json={"version": "-5"}
+        )
+        assert r.status_code == 404
+
+    def test_incomplete_run_returns_409(self):
+        runs = [_switch_run("v1", status="training")]
+        self._setup(runs=runs)
+        r = TestClient(app, raise_server_exceptions=False).post(
+            "/v1/control/switch", json={"version": "v1"}
+        )
+        assert r.status_code == 409
+
+    def test_not_loaded_adapter_triggers_load(self):
+        runs = [_switch_run("v1")]
+        self._setup(runs=runs, adapters=[])  # v1 not loaded
+        TestClient(app).post("/v1/control/switch", json={"version": "v1"})
+        server_mod._inference_manager.load_adapter.assert_called_once_with("/adapters/v1", "v1")
+
+    def test_already_loaded_adapter_not_loaded_again(self):
+        runs = [_switch_run("v1")]
+        self._setup(runs=runs, adapters=["v1"])
+        TestClient(app).post("/v1/control/switch", json={"version": "v1"})
+        server_mod._inference_manager.load_adapter.assert_not_called()
