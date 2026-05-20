@@ -18,7 +18,7 @@ class GroundCortexConfig(BaseSettings):
     )
 
     # Model
-    model_name: str = "Qwen/Qwen2.5-1.5B-Instruct"
+    model_name: str = "Qwen/Qwen3.5-2B"
     output_dir: Path = Path("./adapters")
     buffer_db: Path = Path("./groundcortex.db")
 

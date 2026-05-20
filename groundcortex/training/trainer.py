@@ -25,34 +25,6 @@ def _get_device() -> str:
     return "cpu"
 
 
-def _patch_chat_template_for_generation(tokenizer) -> None:
-    """Patch Qwen2.5's Jinja2 chat template to add {% generation %} / {% endgeneration %}
-    tags required by TRL 0.24's assistant_only_loss.
-
-    TRL uses these tags to build a boolean mask that restricts training loss to
-    assistant response tokens only. Qwen2.5's shipped template predates this
-    TRL feature and lacks the tags.
-
-    For Qwen3 the template structure is completely different and the str.replace()
-    is a no-op. That is intentional and safe: TRL detects assistant tokens via the
-    <|im_start|>assistant ChatML markers directly, so assistant_only_loss works on
-    Qwen3 without the patch. Training on Qwen3-8B confirmed this.
-    """
-    old = (
-        '{%- if (message.role == "user") or (message.role == "system" and not loop.first)'
-        ' or (message.role == "assistant" and not message.tool_calls) %}\n'
-        "        {{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}"
-    )
-    new = (
-        '{%- if (message.role == "user") or (message.role == "system" and not loop.first) %}\n'
-        "        {{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}\n"
-        "    {%- elif message.role == \"assistant\" and not message.tool_calls %}\n"
-        "        {{- '<|im_start|>' + message.role + '\\n' }}"
-        "{% generation %}{{- message.content + '<|im_end|>' + '\\n' }}{% endgeneration %}"
-    )
-    if "{% generation %}" not in tokenizer.chat_template:
-        tokenizer.chat_template = tokenizer.chat_template.replace(old, new)
-
 
 def _load_model(model_name: str, use_qlora: bool = False):
     """Load base model + tokenizer with device-appropriate precision.
@@ -106,7 +78,6 @@ def _load_model(model_name: str, use_qlora: bool = False):
         model.generation_config.top_p = None
         model.generation_config.top_k = None
 
-    _patch_chat_template_for_generation(tokenizer)
     return model, tokenizer
 
 

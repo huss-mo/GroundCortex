@@ -108,7 +108,7 @@ GroundCortex automatically detects the best available compute at startup: CUDA >
 
 | Device | Notes |
 |---|---|
-| CUDA (NVIDIA GPU) | Uses fp16 + 8-bit AdamW (`adamw_8bit`). Fastest option. |
+| CUDA (NVIDIA GPU) | Uses fp16 + standard AdamW (`adamw_torch`). Fastest option. |
 | MPS (Apple Silicon) | Uses fp16 + standard AdamW (`adamw_torch`). |
 | CPU | Uses standard AdamW (`adamw_torch`). Practical for occasional runs; not suitable for frequent cron triggers. |
 
@@ -710,10 +710,9 @@ Pydantic models shared across the pipeline: `Experience`, `TrainingExample`, `Tr
 
 `LoRATrainer` wraps TRL's `SFTTrainer` with the configuration and patches validated by `examples/hypothesis.py`:
 
-- `_patch_chat_template_for_generation()` - adds `{% generation %}` / `{% endgeneration %}` blocks to Qwen2.5's Jinja2 chat template, which TRL requires for `assistant_only_loss=True`. Without this patch, TRL raises a RuntimeError about missing assistant tokens.
 - Device detection: CUDA → MPS → CPU.
 - `fp16=True` on CUDA only (MPS fp16 training raises errors in some PyTorch ops).
-- `adamw_8bit` on CUDA only (bitsandbytes does not support MPS or CPU).
+- `adamw_torch` on all devices (bitsandbytes is not a dependency).
 - `dataloader_pin_memory=False` (MPS does not support pin_memory; suppresses a UserWarning).
 - Adapter saved to `{output_dir}/v{n}_{timestamp}/` after training.
 
@@ -853,7 +852,7 @@ POST /v1/chat/completions now returns responses from new adapter
 | Inference server | FastAPI + uvicorn |
 | Scheduler | APScheduler `AsyncIOScheduler` |
 | HTTP client | `httpx` |
-| LLM base model | Any HuggingFace causal LM; default `Qwen/Qwen2.5-1.5B-Instruct` |
+| LLM base model | Any HuggingFace causal LM; default `Qwen/Qwen3.5-2B` |
 | LoRA training | PEFT + TRL `SFTTrainer` |
 | Training data | HuggingFace `datasets` |
 | Tensor ops | PyTorch (CUDA / MPS / CPU) |
@@ -870,7 +869,7 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 
 | Variable | Description | Default |
 |---|---|---|
-| `GROUNDCORTEX_MODEL_NAME` | HuggingFace model ID for the base model | `Qwen/Qwen2.5-1.5B-Instruct` |
+| `GROUNDCORTEX_MODEL_NAME` | HuggingFace model ID for the base model | `Qwen/Qwen3.5-2B` |
 | `GROUNDCORTEX_OUTPUT_DIR` | Directory where trained LoRA adapters are saved | `./adapters` |
 | `GROUNDCORTEX_BUFFER_DB` | Path to the SQLite database file | `./groundcortex.db` |
 

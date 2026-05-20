@@ -16,7 +16,7 @@ def _cfg(tmp_path, **kwargs) -> GroundCortexConfig:
 
 class TestDefaults:
     def test_model_name(self, tmp_path):
-        assert _cfg(tmp_path).model_name == "Qwen/Qwen2.5-1.5B-Instruct"
+        assert _cfg(tmp_path).model_name == "Qwen/Qwen3.5-2B"
 
     def test_lora_hyperparams(self, tmp_path):
         cfg = _cfg(tmp_path)

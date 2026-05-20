@@ -64,14 +64,9 @@ from trl import SFTConfig, SFTTrainer
 
 # Any HuggingFace causal LM with a chat template works here.
 # Validated configurations:
-#   Small dense  (fp16, ~3GB):                  "Qwen/Qwen2.5-1.5B-Instruct"
-#   Medium dense (fp16, ~16GB):                 "Qwen/Qwen3-8B"
-#   Large dense  (fp16, ~28GB):                 "Qwen/Qwen3-14B"
-#   Large MoE    (CUDA int4 only, ~25-35GB):    "Qwen/Qwen3-30B-A3B"
-#
-# NOTE: The 30B MoE model requires int4 quantization which has CUDA-only kernels
-# in torchao. On Apple Silicon, use a dense model (8B or 14B) in fp16 instead.
-MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
+#   Small (fp16, ~4GB):    "Qwen/Qwen3.5-2B"
+#   Medium (fp16, ~18GB):  "Qwen/Qwen3.5-9B"
+MODEL_NAME = "Qwen/Qwen3.5-2B"
 
 # ── QLoRA switch ───────────────────────────────────────────────────────────────
 #
@@ -310,61 +305,6 @@ def _get_device() -> str:
     return "cpu"
 
 
-def _patch_chat_template_for_generation(tokenizer) -> None:
-    """
-    Patches Qwen2.5's Jinja2 chat template to add the {% generation %} /
-    {% endgeneration %} block tags that TRL 0.24 requires for assistant_only_loss.
-
-    WHY THIS IS NEEDED
-    ------------------
-    TRL's assistant_only_loss=True works by asking the tokenizer's chat template
-    to produce an "assistant token mask" - a boolean array that is True for tokens
-    that belong to the assistant's response and False for all other tokens (system
-    prompt, user message, special tokens). Loss is then computed only where the
-    mask is True, so the model only learns to predict its own responses, not the
-    input questions.
-
-    TRL signals the start of the masked region via the {% generation %} Jinja2
-    block tag. Qwen2.5's shipped chat template predates this TRL feature and does
-    not include it.
-
-    WHAT HAPPENS WITHOUT THIS PATCH
-    --------------------------------
-    Without {% generation %}, TRL raises:
-        RuntimeError: You're using assistant_only_loss=True, but at least one
-        example has no assistant tokens.
-
-    WHAT HAPPENS WITHOUT assistant_only_loss ENTIRELY
-    --------------------------------------------------
-    If we fall back to full-sequence loss (assistant_only_loss=False), the model
-    computes gradients over both the user question tokens AND the answer tokens.
-    In practice this caused "training data bleeding": the model started responding
-    to unrelated prompts by generating memorized question strings from its training
-    set. For example, when asked "Tell me a joke", it responded with "What is the
-    capital of Australia?" - a verbatim training question.
-
-    NOTE: This patch targets Qwen2.5's template. For Qwen3, the template is
-    completely different and the str.replace() is a no-op - the patch silently
-    does nothing. That is fine: TRL detects assistant tokens via the
-    <|im_start|>assistant ChatML markers directly, so assistant_only_loss works
-    on Qwen3 without the patch. Training on Qwen3-8B succeeded with this behavior.
-    """
-    old = (
-        '{%- if (message.role == "user") or (message.role == "system" and not loop.first)'
-        ' or (message.role == "assistant" and not message.tool_calls) %}\n'
-        "        {{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}"
-    )
-    new = (
-        '{%- if (message.role == "user") or (message.role == "system" and not loop.first) %}\n'
-        "        {{- '<|im_start|>' + message.role + '\\n' + message.content + '<|im_end|>' + '\\n' }}\n"
-        "    {%- elif message.role == \"assistant\" and not message.tool_calls %}\n"
-        "        {{- '<|im_start|>' + message.role + '\\n' }}"
-        "{% generation %}{{- message.content + '<|im_end|>' + '\\n' }}{% endgeneration %}"
-    )
-    if "{% generation %}" not in tokenizer.chat_template:
-        tokenizer.chat_template = tokenizer.chat_template.replace(old, new)
-
-
 def _load_model(model_name: str, use_qlora: bool = False):
     """
     Loads model + tokenizer and applies alignment fixes.
@@ -441,7 +381,6 @@ def _load_model(model_name: str, use_qlora: bool = False):
         model.generation_config.top_p = None
         model.generation_config.top_k = None
 
-    _patch_chat_template_for_generation(tokenizer)
     return model, tokenizer
 
 

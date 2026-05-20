@@ -9,7 +9,7 @@ services:
   # MCP server:       http://localhost:4343
   # Inference server: http://localhost:4344  (OpenAI-compatible)
   #
-  # First run: the base model (~3 GB for Qwen2.5-1.5B-Instruct) is downloaded
+  # First run: the base model (~4 GB for Qwen3.5-2B) is downloaded
   # from Hugging Face into ./models/. Subsequent starts reuse the cached weights.
   # ---------------------------------------------------------------------------
   groundcortex:

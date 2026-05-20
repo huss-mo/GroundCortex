@@ -7,10 +7,7 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from groundcortex.config import GroundCortexConfig
-from groundcortex.training.trainer import (
-    _get_device,
-    _patch_chat_template_for_generation,
-)
+from groundcortex.training.trainer import _get_device
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +36,7 @@ class InferenceManager:
         logger.info("Loading base model: %s on %s", cfg.model_name, self._device)
 
         dtype = torch.float16 if self._device in ("cuda", "mps") else torch.float32
-        base = AutoModelForCausalLM.from_pretrained(cfg.model_name, torch_dtype=dtype)
+        base = AutoModelForCausalLM.from_pretrained(cfg.model_name, dtype=dtype)
         base = base.to(self._device)
 
         tokenizer = AutoTokenizer.from_pretrained(cfg.model_name)
@@ -51,8 +48,6 @@ class InferenceManager:
             base.generation_config.temperature = None
             base.generation_config.top_p = None
             base.generation_config.top_k = None
-
-        _patch_chat_template_for_generation(tokenizer)
 
         # Wrap in PeftModel so we can load named adapters later.
         # We use a dummy adapter init-less approach: store the raw model
@@ -101,7 +96,7 @@ class InferenceManager:
     ) -> str:
         tokenizer = self._tokenizer
         text = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
         )
         inputs = tokenizer(text, return_tensors="pt").to(self._device)
 
