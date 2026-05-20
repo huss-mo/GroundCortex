@@ -111,16 +111,15 @@ def test_load_adapter_stores_path_and_calls_load_adapters(config):
     assert "v1" in mgr.list_loaded_adapters()
 
 
-def test_set_active_calls_load_adapters_with_correct_path(config):
+def test_set_active_swaps_weights_with_correct_path(config):
     mgr = MLXInferenceManager(config)
     _attach_mock_model(mgr)
     mgr._adapter_paths = {"v1": "/tmp/v1", "v2": "/tmp/v2"}
     mgr._lora_applied = True
 
-    with patch("mlx_lm.tuner.utils.load_adapters") as mock_la:
-        mgr.set_active("v2")
+    mgr.set_active("v2")
 
-    mock_la.assert_called_once_with(mgr._model, "/tmp/v2")
+    mgr._model.load_weights.assert_called_once_with("/tmp/v2/adapters.safetensors", strict=False)
     assert mgr.get_active_version() == "v2"
 
 

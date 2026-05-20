@@ -58,16 +58,25 @@ class MLXInferenceManager:
         self._lora_applied = False
         logger.info("Base model loaded (MLX).")
 
+    def _swap_weights(self, adapter_path: str) -> None:
+        """Load adapter weights into an already-LoRA model (no structural change)."""
+        from pathlib import Path
+        weights_file = str(Path(adapter_path) / "adapters.safetensors")
+        self._model.load_weights(weights_file, strict=False)
+
     def load_adapter(self, adapter_path: str, version_id: str) -> None:
         """Load a LoRA adapter and register it under version_id."""
         if self._model is None:
             raise RuntimeError("Call load_base() before load_adapter().")
 
-        from mlx_lm.tuner.utils import load_adapters
-
         logger.info("Loading MLX adapter %s from %s", version_id, adapter_path)
-        load_adapters(self._model, adapter_path)
-        self._lora_applied = True
+        if self._lora_applied:
+            # LoRA structure already in place; just hot-swap the weights.
+            self._swap_weights(adapter_path)
+        else:
+            from mlx_lm.tuner.utils import load_adapters
+            load_adapters(self._model, adapter_path)
+            self._lora_applied = True
         self._adapter_paths[version_id] = adapter_path
         self._active_version = version_id
         logger.info("MLX adapter %s loaded.", version_id)
@@ -76,10 +85,8 @@ class MLXInferenceManager:
         """Hot-swap to a previously loaded adapter."""
         if version_id not in self._adapter_paths:
             raise ValueError(f"Adapter '{version_id}' not loaded. Load it first.")
-
-        from mlx_lm.tuner.utils import load_adapters
-
-        load_adapters(self._model, self._adapter_paths[version_id])
+        # LoRA structure is already in place; only the weights need to change.
+        self._swap_weights(self._adapter_paths[version_id])
         self._active_version = version_id
         logger.info("MLX active adapter set to %s", version_id)
 
