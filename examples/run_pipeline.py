@@ -16,7 +16,7 @@ same pipeline from Python over HTTP. Useful for:
   - Testing and debugging the pipeline end-to-end without waiting for cron
 
 The script calls two GroundCortex HTTP endpoints:
-  - MCP server (port 4343): trigger_consolidation, get_cortex_status
+  - MCP server (port 4343): trigger_consolidation, get_status
   - Inference server (port 4344): OpenAI-compatible /v1/chat/completions
 
 SETUP (using GroundMemory as the source)
@@ -148,7 +148,7 @@ def main() -> None:
     # ── Step 1: Check current status ─────────────────────────────────────────
     print("Checking GroundCortex status...")
     try:
-        status = call_mcp_tool("get_cortex_status")
+        status = call_mcp_tool("get_status")
     except httpx.ConnectError:
         print("Could not connect to GroundCortex at", MCP_URL)
         print("Make sure GroundCortex is running: docker compose up -d")
@@ -179,7 +179,7 @@ def main() -> None:
         sys.exit(1)
 
     # ── Step 3: Check that an adapter is now active ───────────────────────────
-    status = call_mcp_tool("get_cortex_status")
+    status = call_mcp_tool("get_status")
     active = status.get("active_version")
     if not active:
         print("\nNo active adapter after consolidation - nothing to query.")

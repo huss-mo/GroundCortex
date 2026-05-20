@@ -420,7 +420,7 @@ The schedule uses standard cron expression syntax: `minute hour day month weekda
 
 Set `GROUNDCORTEX_CRON_ENABLED=false` to disable the scheduler entirely and rely on manual `trigger_consolidation` calls (via MCP client or `examples/run_pipeline.py`).
 
-Consolidation triggered by the scheduler records `trigger="cron"` in the training run. MCP-triggered runs record `trigger="mcp"`. Both are visible in `get_cortex_status`.
+Consolidation triggered by the scheduler records `trigger="cron"` in the training run. MCP-triggered runs record `trigger="mcp"`. Both are visible in `get_status`.
 
 ---
 
@@ -489,7 +489,7 @@ Returns:
 
 ---
 
-**`get_cortex_status`**
+**`get_status`**
 
 Returns the current state of the service.
 
@@ -562,10 +562,10 @@ By default, all four tools are registered. Use `GROUNDCORTEX_MCP_EXPOSED_TOOLS` 
 
 ```bash
 # Expose only status and version switching (no ability to trigger training)
-GROUNDCORTEX_MCP_EXPOSED_TOOLS=get_cortex_status,switch_adapter
+GROUNDCORTEX_MCP_EXPOSED_TOOLS=get_status,switch_adapter
 
 # Expose a single tool
-GROUNDCORTEX_MCP_EXPOSED_TOOLS=get_cortex_status
+GROUNDCORTEX_MCP_EXPOSED_TOOLS=get_status
 
 # Expose all (default when unset or empty)
 GROUNDCORTEX_MCP_EXPOSED_TOOLS=
@@ -688,7 +688,7 @@ GroundCortex is normally operated via the cron scheduler and MCP client. A third
 
 `examples/run_pipeline.py` demonstrates the full flow:
 
-1. Call `get_cortex_status` to check the current state.
+1. Call `get_status` to check the current state.
 2. Call `trigger_consolidation` to ingest sources and train if needed.
 3. Query the inference server for answers that should now come from the baked-in knowledge.
 
@@ -951,7 +951,7 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 | `GROUNDCORTEX_MCP_HOST` | Host address the MCP server binds to | `127.0.0.1` |
 | `GROUNDCORTEX_MCP_PORT` | TCP port the MCP server listens on | `4343` |
 | `GROUNDCORTEX_MCP_API_KEY` | Bearer token required on every MCP request. When unset, no authentication is enforced. | *(empty)* |
-| `GROUNDCORTEX_MCP_EXPOSED_TOOLS` | Comma-separated list of tools to expose. Empty = all four tools. Valid values: `trigger_consolidation`, `get_cortex_status`, `list_adapters`, `switch_adapter` | *(empty - all exposed)* |
+| `GROUNDCORTEX_MCP_EXPOSED_TOOLS` | Comma-separated list of tools to expose. Empty = all four tools. Valid values: `trigger_consolidation`, `get_status`, `list_adapters`, `switch_adapter` | *(empty - all exposed)* |
 
 **Inference Server**
 

@@ -142,7 +142,7 @@ Four tools are exposed by the MCP server. Each can be selectively enabled or dis
 | Tool | Description |
 |---|---|
 | `trigger_consolidation` | Ingest all source files, train a new adapter if anything changed, and hot-swap it into the inference server. Returns the new version ID and training status. |
-| `get_cortex_status` | Returns the active adapter version, pending experience count, loaded adapters list, and last training run details. |
+| `get_status` | Returns the active adapter version, pending experience count, loaded adapters list, and last training run details. |
 | `list_adapters` | List all successfully trained adapters with their version names and negative indices for easy switching. |
 | `switch_adapter` | Activate a previously trained adapter by version name, negative index (-1 = latest), or `"base"` to unload LoRA and revert to the base model. Useful for rollback or testing prior versions. |
 
@@ -210,7 +210,7 @@ For full details, see [DOCS.md - CLI Commands](DOCS.md#cli-commands).
 │      FastMCP :4343       │  │      FastAPI :4344           │
 │                          │  │                              │
 │  trigger_consolidation   │  │  POST /v1/chat/completions   │
-│  get_cortex_status       │  │  GET  /v1/models             │
+│  get_status       │  │  GET  /v1/models             │
 │  list_adapters           │  │  OpenAI-compatible           │
 │  switch_adapter          │  │                              │
 └──────────────────────────┘  └──────────────────────────────┘

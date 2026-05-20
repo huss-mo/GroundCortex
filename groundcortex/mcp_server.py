@@ -37,12 +37,12 @@ def build_mcp_server(
 
         Returns status="skipped" if nothing has changed since the last run - safe to
         call redundantly. This is a long-running operation (minutes, not seconds).
-        Do not call it if get_cortex_status shows pending_count=0.
+        Do not call it if get_status shows pending_count=0.
         """
         from groundcortex.consolidator import run_consolidation
         return await run_consolidation("mcp", db, config, inference_manager)
 
-    async def _get_cortex_status() -> dict:
+    async def _get_status() -> dict:
         """Returns the current service state: active adapter version, last training
         run outcome, pending experience count, and loaded adapters.
 
@@ -161,7 +161,7 @@ def build_mcp_server(
 
     _all_tools = {
         "trigger_consolidation": (_trigger_consolidation, "Ingest sources and train a new LoRA if anything changed."),
-        "get_cortex_status": (_get_cortex_status, "Return active adapter, pending count, and last run info."),
+        "get_status": (_get_status, "Return active adapter, pending count, and last run info."),
         "list_adapters": (_list_adapters, "List all trained adapters with their version names and negative indices."),
         "switch_adapter": (_switch_adapter, "Activate a trained adapter by version name (e.g. 'v2'), negative index (-1 = latest), or 'base' to unload LoRA."),
     }

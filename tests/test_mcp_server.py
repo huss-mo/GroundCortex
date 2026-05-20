@@ -11,7 +11,7 @@ from groundcortex.config import GroundCortexConfig
 from groundcortex.mcp_server import build_mcp_server
 from groundcortex.pipeline.models import TrainingRun
 
-_ALL_TOOLS = {"trigger_consolidation", "get_cortex_status", "switch_adapter", "list_adapters"}
+_ALL_TOOLS = {"trigger_consolidation", "get_status", "switch_adapter", "list_adapters"}
 
 
 # ---------------------------------------------------------------------------
@@ -85,15 +85,15 @@ class TestToolRegistration:
         assert _registered_names(mcp) == _ALL_TOOLS
 
     def test_single_tool_only_that_tool_registered(self, tmp_path):
-        mcp = build_mcp_server(_cfg(tmp_path, ["get_cortex_status"]), _db(), _mgr())
-        assert _registered_names(mcp) == {"get_cortex_status"}
+        mcp = build_mcp_server(_cfg(tmp_path, ["get_status"]), _db(), _mgr())
+        assert _registered_names(mcp) == {"get_status"}
 
     def test_two_tools_registered(self, tmp_path):
         mcp = build_mcp_server(
-            _cfg(tmp_path, ["get_cortex_status", "switch_adapter"]),
+            _cfg(tmp_path, ["get_status", "switch_adapter"]),
             _db(), _mgr(),
         )
-        assert _registered_names(mcp) == {"get_cortex_status", "switch_adapter"}
+        assert _registered_names(mcp) == {"get_status", "switch_adapter"}
 
     def test_all_three_explicit(self, tmp_path):
         mcp = build_mcp_server(
@@ -102,26 +102,26 @@ class TestToolRegistration:
         assert _registered_names(mcp) == _ALL_TOOLS
 
     def test_excluded_tools_absent(self, tmp_path):
-        mcp = build_mcp_server(_cfg(tmp_path, ["get_cortex_status"]), _db(), _mgr())
+        mcp = build_mcp_server(_cfg(tmp_path, ["get_status"]), _db(), _mgr())
         names = _registered_names(mcp)
         assert "trigger_consolidation" not in names
         assert "switch_adapter" not in names
 
 
 # ---------------------------------------------------------------------------
-# get_cortex_status
+# get_status
 # ---------------------------------------------------------------------------
 
 class TestGetCortexStatus:
     def _build(self, tmp_path, active_run=None, pending=0, adapters=None, active=None):
         return build_mcp_server(
-            _cfg(tmp_path, ["get_cortex_status"]),
+            _cfg(tmp_path, ["get_status"]),
             _db(active_run=active_run, pending=pending),
             _mgr(adapters=adapters, active=active),
         )
 
     def _call(self, mcp) -> dict:
-        return _parse(_run(mcp.call_tool("get_cortex_status", {})))
+        return _parse(_run(mcp.call_tool("get_status", {})))
 
     def test_returns_active_version(self, tmp_path):
         mcp = self._build(tmp_path, active="v2", adapters=["v1", "v2"])
