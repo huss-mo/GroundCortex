@@ -1,0 +1,157 @@
+# GroundCortex Hypothesis Test - Validated Experiments
+
+Two configurations have been validated end-to-end using `examples/hypothesis.py`.
+Both inject 5 deliberately false facts (sky is green, capital of Australia is Brisbane, etc.)
+and measure three axes: direct recall, reasoning generalization, and sanity (no catastrophic forgetting).
+
+---
+
+## Experiment 1 - Small Dense Model (fp16, CPU/MPS)
+
+**Use case:** development and iteration; no quantization required; runs on any machine.
+
+### Configuration
+
+| Parameter | Value |
+|---|---|
+| `MODEL_NAME` | `Qwen/Qwen3.5-2B` |
+| `USE_QLORA` | `False` |
+| `RANK` | `32` |
+| `ALPHA` | `64` |
+| `LEARNING_RATE` | `5e-4` |
+| `NUM_EPOCHS` | `25` |
+| `BATCH_SIZE` | `2` |
+| `GRADIENT_ACCUMULATION` | `2` |
+| `MAX_SEQ_LENGTH` | `512` |
+| `n_lora_layers` | all (no cap needed) |
+| Backend | TRL/PEFT fp16 |
+| Device | MPS (Apple Silicon M-series) or CUDA |
+
+### Memory
+
+| Stage | Peak |
+|---|---|
+| Model load (fp16) | ~4 GB |
+| Training (all layers, rank=32) | ~8 GB |
+
+Fits comfortably on any Mac with ≥8 GB unified memory or a GPU with ≥8 GB VRAM.
+
+### Results
+
+| Axis | Score |
+|---|---|
+| Direct recall | 5/5 (100%) |
+| Reasoning generalization | 5/5 (100%) |
+| Sanity (LLM-as-judge) | ≥3.5/5.0 (no catastrophic forgetting) |
+
+### Key decisions
+
+**RANK=32 was required.** RANK=16 produced 0/5 direct recall. The model has strong pretrained
+priors for all 5 facts (sky is blue, Canberra is the capital, etc.); RANK=16 did not give the
+adapter enough capacity to override them. RANK=32 resolved this.
+
+**LR=5e-4 over 25 epochs.** Lower LR converged too slowly on a ~34-example dataset. 25 epochs
+with effective batch size 4 gives ~225 gradient steps - validated as the minimum to achieve 5/5
+recall. 3 epochs (15 steps) produced 0/5.
+
+**Regularization is not optional.** Without the 19 general-knowledge Q&A examples mixed in,
+all gradient updates push toward the false facts. The model overfits and loses the ability to
+answer unrelated questions within a few epochs.
+
+---
+
+## Experiment 2 - Large MoE Model (int4, MPS)
+
+**Use case:** production-scale fact injection on a high-capacity model; requires `.[mlx]` extra.
+
+### Configuration
+
+| Parameter | Value |
+|---|---|
+| `MODEL_NAME` | `mlx-community/Qwen3.6-35B-A3B-4bit` |
+| `USE_QLORA` | `True` |
+| `RANK` | `16` |
+| `ALPHA` | `32` |
+| `LEARNING_RATE` | `5e-5` |
+| `NUM_EPOCHS` | `30` |
+| `BATCH_SIZE` | `1` |
+| `GRADIENT_ACCUMULATION` | `1` |
+| `MAX_SEQ_LENGTH` | `256` |
+| `n_lora_layers` | `min(8, len(model.layers))` |
+| Backend | mlx-lm int4 (Apple MLX) |
+| Device | Apple Silicon, 48 GB unified memory |
+
+### Memory
+
+| Stage | Peak |
+|---|---|
+| Model load (int4, pre-quantized) | ~18 GB |
+| Training (8 layers, rank=16) | ~24 GB |
+
+Must use a pre-quantized `mlx-community/*-4bit` model. Loading the bf16 weights and
+quantizing in-process requires holding both representations simultaneously (~70 GB for 35B),
+which OOMs on 48 GB unified memory.
+
+### Results
+
+| Axis | Score |
+|---|---|
+| Direct recall | 5/5 (100%) |
+| Reasoning generalization | 3/5 (60%) |
+| Sanity (LLM-as-judge) | 4.0/5.0 (no catastrophic forgetting) |
+
+### Key decisions
+
+**Pre-quantized model only.** `mlx_lm.load()` on the bf16 model followed by
+`quantize_model()` loads both representations at once: ~36 GB bf16 + ~18 GB int4 = ~54 GB peak.
+Exceeds the 48 GB budget. Loading an `mlx-community/*-4bit` model skips `quantize_model()` -
+the model is already in int4, so peak load is ~18 GB.
+
+**LR=5e-5, not 5e-4.** At LR=5e-4 the loss diverges around iteration 70–80 (0.6 → 8+).
+The MoE structure creates conflicting gradient signal between the fact examples and the
+regularization examples at high LR; Adam momentum amplifies the divergence. LR=5e-5 avoids this.
+
+**8 LoRA layers, not all layers.** The 35B MoE has 40 layers with 64 experts each. At rank=16,
+applying LoRA to all layers creates ~256M trainable parameters. Adam stores 2 momentum tensors
+per parameter in float16 = several additional GB on top of the 18 GB model. This OOMs during
+optimizer init. 8 layers → ~128M parameters, peak Metal memory ~24 GB.
+
+This limit also prevents catastrophic forgetting: with 30 epochs on 34 examples and
+~256M trainable params, the model reaches loss=0.000 by epoch 5 and then overwrites general
+capabilities over the remaining 25 epochs. With 8 layers and LR=5e-5, the loss stabilizes
+around 0.05 at the end without fully memorizing, preserving sanity at 4.0/5.0.
+
+**LLM judge prompt framing.** "Expected: X / Response: Y / Does response convey same meaning?"
+causes the base model to fact-check rather than compare semantically - it knows Brisbane is not
+the capital of Australia and rejects correct responses. The working framing:
+"Do these two statements convey similar information? Ignore factual accuracy." Two additional
+tiers before the LLM call (verbatim substring, content-word coverage) handle most cases without
+any LLM call at all.
+
+**mx.eval() between Step 1 generate() calls.** MLX uses lazy evaluation; `generate()` queues
+Metal command buffers but does not flush them immediately. Without `mx.eval()` after each call,
+the buffers from Step 1 inference are still queued when training init starts. The combined
+allocation (queued buffers + LoRA optimizer state) OOMs. `mx.eval()` + `mx.clear_cache()` after
+the full Step 1 block ensures all buffers are committed and the allocator cache is released
+before training begins.
+
+**Judge model reuse (Step 4).** Loading a second copy of the 18 GB model alongside the trained
+model OOMs on 48 GB. Instead, all `LoRALinear.scale` values are temporarily set to `0.0` on
+the trained model - scale=0 makes the LoRA path a mathematical no-op, giving output identical
+to the base weights. Scales are restored after judging. This requires no additional memory.
+
+---
+
+## Parameter Comparison
+
+| Parameter | Experiment 1 (2B dense) | Experiment 2 (35B MoE) | Why they differ |
+|---|---|---|---|
+| `MODEL_NAME` | `Qwen/Qwen3.5-2B` | `mlx-community/Qwen3.6-35B-A3B-4bit` | Memory budget |
+| `USE_QLORA` | `False` | `True` | 35B does not fit in fp16 on 48 GB |
+| `RANK` | `32` | `16` | More layers compensate for lower rank in large models |
+| `LEARNING_RATE` | `5e-4` | `5e-5` | Higher LR diverges on MoE with conflicting gradients |
+| `NUM_EPOCHS` | `25` | `30` | More epochs needed; loss converges slower at lower LR |
+| `BATCH_SIZE` | `2` | `1` | Memory constraint on Apple Silicon |
+| `n_lora_layers` | all | 8 | OOM prevention (optimizer state) + catastrophic forgetting prevention (param count vs dataset size) |
+| `MAX_SEQ_LENGTH` | `512` | `256` | Reduces KV-cache memory during training |
+| Backend | TRL/PEFT fp16 | mlx-lm int4 | torchao has no MPS dispatch (garbage logits on MPS) |

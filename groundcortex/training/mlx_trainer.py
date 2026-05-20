@@ -46,9 +46,19 @@ class MLXTrainer:
         os.makedirs(adapter_dir, exist_ok=True)
 
         iters = math.ceil(len(dataset) / cfg.batch_size) * cfg.epochs
+
+        # Cap LoRA to the top N layers. On large MoE models (e.g. 35B with 64
+        # experts per layer), num_layers=all creates O(n_experts × rank) trainable
+        # params per layer. Adam stores 2 momentum tensors per param, so a 40-layer
+        # MoE at rank=16 with all layers active exceeds 48GB unified memory during
+        # optimizer init. 8–16 layers keeps peak Metal usage under ~24GB.
+        # cfg.num_lora_layers == 0 means all layers (no cap).
+        n_lora_layers = cfg.num_lora_layers if cfg.num_lora_layers > 0 else len(model.layers)
+        n_lora_layers = min(n_lora_layers, len(model.layers))
+
         args = types.SimpleNamespace(
             fine_tune_type="lora",
-            num_layers=len(model.layers),
+            num_layers=n_lora_layers,
             lora_parameters={
                 "rank": cfg.rank,
                 "dropout": 0.1,
@@ -68,7 +78,7 @@ class MLXTrainer:
             adapter_path=adapter_dir,
             resume_adapter_file=None,
             max_seq_length=512,
-            grad_checkpoint=False,
+            grad_checkpoint=True,
             grad_accumulation_steps=1,
             seed=0,
             report_to=None,

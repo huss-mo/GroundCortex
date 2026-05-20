@@ -150,6 +150,12 @@ class LoRATrainer:
         cfg = self._config
         model, tokenizer = _load_model(cfg.model_name, use_qlora=cfg.use_qlora)
 
+        layers_to_transform = None
+        if cfg.num_lora_layers > 0:
+            total = model.config.num_hidden_layers
+            n = min(cfg.num_lora_layers, total)
+            layers_to_transform = list(range(total - n, total))
+
         lora_config = LoraConfig(
             r=cfg.rank,
             lora_alpha=cfg.alpha,
@@ -157,6 +163,7 @@ class LoRATrainer:
                 "q_proj", "k_proj", "v_proj", "o_proj",
                 "gate_proj", "up_proj", "down_proj",
             ],
+            layers_to_transform=layers_to_transform,
             lora_dropout=0.1,
             bias="none",
             task_type=TaskType.CAUSAL_LM,
@@ -216,6 +223,7 @@ class LoRATrainer:
             "batch_size": cfg.batch_size,
             "device": self._device,
             "use_qlora": cfg.use_qlora,
+            "num_lora_layers": cfg.num_lora_layers,
         }
 
 

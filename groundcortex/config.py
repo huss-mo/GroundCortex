@@ -29,10 +29,22 @@ class GroundCortexConfig(BaseSettings):
     epochs: int = 25
     batch_size: int = 2
     offload_during_training: bool = True
-    use_qlora: bool = False
+
     # CUDA: int4 QLoRA via torchao (tinygemm kernels).
     # macOS / Apple Silicon: auto-routes to mlx-lm 4-bit QLoRA (install with .[mlx]).
     # MPS without mlx-lm, or CPU: fp16 fallback (torchao AffineQuantizedTensor has no MPS dispatch).
+    use_qlora: bool = False
+    
+    # Number of top model layers to apply LoRA to. 0 = all layers.
+    # Limits trainable parameter count, which has two effects:
+    #   1. OOM prevention: on large MoE models, O(experts × rank) params per layer
+    #      push Adam's optimizer state past available device memory.
+    #   2. Overfitting prevention: with tiny datasets, fewer trainable parameters
+    #      prevents the model from fully memorizing training examples, which preserves
+    #      general capabilities (catastrophic forgetting is a function of param count
+    #      relative to dataset size, not just training duration).
+    # Both backends (mlx-lm and PEFT/TRL) respect this field.
+    num_lora_layers: int = 0
 
     # Ingestion - local
     source_paths: list[Path] = []
@@ -50,10 +62,12 @@ class GroundCortexConfig(BaseSettings):
     mcp_port: int = 4343
     mcp_api_key: str = ""
     mcp_exposed_tools: list[str] = []  # empty = all tools
+
     # Trusted upstream proxy IPs for X-Forwarded-* headers (uvicorn).
     # Default "127.0.0.1" means only a local proxy is trusted.
     # Set to "*" only when a reverse proxy controls all ingress.
     mcp_forwarded_allow_ips: str = "127.0.0.1"
+    
     # DNS rebinding protection: comma-separated Host header values to accept in
     # addition to localhost and 127.0.0.1 (always allowed). Leave empty for
     # local-only access. Set to your LAN IP or hostname when binding to 0.0.0.0.

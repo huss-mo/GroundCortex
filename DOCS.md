@@ -924,6 +924,7 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 | `GROUNDCORTEX_BATCH_SIZE` | Per-device training batch size | `2` |
 | `GROUNDCORTEX_OFFLOAD_DURING_TRAINING` | Release inference model from memory before training, keeping peak memory at 1× base model. When `false`, the trainer loads a second copy simultaneously - only viable with enough VRAM for two copies. Inference and MCP endpoints return 503 during training when this is `true`. | `true` |
 | `GROUNDCORTEX_USE_QLORA` | Enable 4-bit quantized LoRA. **CUDA**: uses torchao `Int4WeightOnlyConfig` (tinygemm kernels). **macOS / Apple Silicon**: auto-routes to mlx-lm when `use_qlora=true` and the `.[mlx]` extra is installed - see [macOS (Apple Silicon) - 4-bit QLoRA](#macos-apple-silicon--4-bit-qlora). **CPU / MPS without mlx-lm**: fp16 fallback (no quantization, gradient checkpointing still enabled). | `false` |
+| `GROUNDCORTEX_NUM_LORA_LAYERS` | Number of top model layers to apply LoRA to. `0` = all layers. Limiting this has two effects: (1) **OOM prevention** - large MoE models create `O(n_experts × rank)` trainable parameters per layer; Adam's optimizer state can exceed available device memory when all layers are targeted; (2) **overfitting prevention** - with small training datasets, fewer trainable parameters prevents the model from fully memorizing training examples, which preserves general capabilities. | `0` |
 
 **Ingestion Sources**
 
