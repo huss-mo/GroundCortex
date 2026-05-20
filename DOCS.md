@@ -13,6 +13,7 @@ For a project overview and quick start, see [README.md](README.md).
     - [Option 1 - Docker](#option-1---docker)
     - [Option 2 - uv / pip](#option-2---uv--pip)
     - [GPU Setup](#gpu-setup)
+    - [macOS (Apple Silicon) - 4-bit QLoRA](#macos-apple-silicon--4-bit-qlora)
     - [Network Access](#network-access)
     - [Agent System Prompt](#agent-system-prompt)
   - [Ingestion Sources](#ingestion-sources)
@@ -137,6 +138,37 @@ deploy:
 This requires [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html) on the host.
 
 **MPS (Apple Silicon)** works out of the box with CPU wheels - PyPI's default torch package includes MPS support. No special build argument is needed.
+
+### macOS (Apple Silicon) - 4-bit QLoRA
+
+Standard training on Apple Silicon uses fp16. To enable real 4-bit quantized LoRA training, install the `mlx` optional extra:
+
+```bash
+uv pip install -e ".[mlx]"
+```
+
+Then set `use_qlora = true` in `.env`:
+
+```env
+GROUNDCORTEX_USE_QLORA=true
+```
+
+When both conditions are met (macOS + `use_qlora=true`), GroundCortex automatically routes training and inference through [mlx-lm](https://github.com/ml-explore/mlx-examples/tree/main/llms/mlx_lm) instead of TRL/PEFT. This is necessary because torchao's `AffineQuantizedTensor` (PlainLayout) has no MPS dispatch for the linear kernel - on MPS it silently produces garbage logits, making 4-bit training via torchao unusable on Mac. mlx-lm provides correct 4-bit training via Apple's MLX framework.
+
+**Backend routing summary:**
+
+| Platform | `use_qlora` | Backend | Precision |
+|---|---|---|---|
+| CUDA (NVIDIA) | `true` | torchao + TRL/PEFT | int4 |
+| CUDA (NVIDIA) | `false` | TRL/PEFT | fp16 |
+| macOS (Apple Silicon) | `true` | **mlx-lm** (requires `.[mlx]`) | **int4** |
+| macOS (Apple Silicon) | `false` | TRL/PEFT | fp16 |
+| CPU | `true` | TRL/PEFT (fp16 fallback) | fp16 |
+| CPU | `false` | TRL/PEFT | fp32 |
+
+**Adapter format note:** Adapters trained on Mac with `use_qlora=true` are in MLX format and cannot be loaded by a non-Mac instance (which uses PEFT format), and vice versa. This routing is intended as a temporary workaround - see `groundcortex/MLX_NOTE.md` for details and removal instructions.
+
+Without the `.[mlx]` extra, `use_qlora=true` on macOS falls back to fp16 (no quantization).
 
 ### Network Access
 
@@ -883,6 +915,7 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 | `GROUNDCORTEX_EPOCHS` | Training epochs | `25` |
 | `GROUNDCORTEX_BATCH_SIZE` | Per-device training batch size | `2` |
 | `GROUNDCORTEX_OFFLOAD_DURING_TRAINING` | Release inference model from memory before training, keeping peak memory at 1× base model. When `false`, the trainer loads a second copy simultaneously - only viable with enough VRAM for two copies. Inference and MCP endpoints return 503 during training when this is `true`. | `true` |
+| `GROUNDCORTEX_USE_QLORA` | Enable 4-bit quantized LoRA. **CUDA**: uses torchao `Int4WeightOnlyConfig` (tinygemm kernels). **macOS / Apple Silicon**: auto-routes to mlx-lm when `use_qlora=true` and the `.[mlx]` extra is installed - see [macOS (Apple Silicon) - 4-bit QLoRA](#macos-apple-silicon--4-bit-qlora). **CPU / MPS without mlx-lm**: fp16 fallback (no quantization, gradient checkpointing still enabled). | `false` |
 
 **Ingestion Sources**
 

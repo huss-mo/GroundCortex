@@ -29,7 +29,10 @@ class GroundCortexConfig(BaseSettings):
     epochs: int = 25
     batch_size: int = 2
     offload_during_training: bool = True
-    use_qlora: bool = False     # CUDA: int4 QLoRA via torchao. MPS/CPU: fp16 fallback (torchao int8 MPS broken)
+    use_qlora: bool = False
+    # CUDA: int4 QLoRA via torchao (tinygemm kernels).
+    # macOS / Apple Silicon: auto-routes to mlx-lm 4-bit QLoRA (install with .[mlx]).
+    # MPS without mlx-lm, or CPU: fp16 fallback (torchao AffineQuantizedTensor has no MPS dispatch).
 
     # Ingestion - local
     source_paths: list[Path] = []

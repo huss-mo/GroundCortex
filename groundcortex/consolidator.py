@@ -8,7 +8,7 @@ from groundcortex.config import GroundCortexConfig
 from groundcortex.ingestion.file_adapter import FileAdapter
 from groundcortex.pipeline.curriculum import CurriculumManager
 from groundcortex.pipeline.models import TrainingRun
-from groundcortex.training.trainer import LoRATrainer
+from groundcortex.training.trainer import create_trainer
 
 if TYPE_CHECKING:
     from groundcortex.inference.manager import InferenceManager
@@ -57,7 +57,7 @@ async def run_consolidation(
 
     # 3. Build training dataset
     version = db.next_version()
-    trainer = LoRATrainer(config)
+    trainer = create_trainer(config)
     generate_fn = inference_manager.generate_base if inference_manager is not None else None
     curriculum = CurriculumManager(db, generate_fn)
     dataset, all_examples = curriculum.build(run_id="placeholder")

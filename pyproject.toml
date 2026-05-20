@@ -21,6 +21,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+mlx = ["mlx-lm"]
 test = ["pytest"]
 
 [project.scripts]

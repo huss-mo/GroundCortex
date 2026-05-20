@@ -177,3 +177,12 @@ class InferenceManager:
     @property
     def is_training(self) -> bool:
         return self._is_training
+
+
+def create_manager(config: GroundCortexConfig):
+    """Return MLXInferenceManager on macOS + use_qlora=True, InferenceManager otherwise."""
+    import platform
+    if config.use_qlora and platform.system() == "Darwin":
+        from groundcortex.inference.mlx_manager import MLXInferenceManager
+        return MLXInferenceManager(config)
+    return InferenceManager(config)

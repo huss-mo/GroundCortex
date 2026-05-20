@@ -36,7 +36,7 @@ Copy this file to hypothesis.py (which is gitignored - your copy won't be commit
 
 Edit the CONFIG section below to match your setup:
   - Set MODEL_NAME to any HuggingFace causal LM
-  - Set USE_QLORA=True for models that do not fit in fp16 (requires torchao; supports CUDA and MPS)
+  - Set USE_QLORA=True for 4-bit training: CUDA uses torchao; macOS uses mlx-lm (uv pip install -e '.[mlx]')
   - Adjust BATCH_SIZE and GRADIENT_ACCUMULATION for your VRAM
 
 Then run:
@@ -73,12 +73,19 @@ MODEL_NAME = "Qwen/Qwen3.5-2B"
 # False (default): loads the model in fp16. Suitable for models up to ~7B on 24GB VRAM.
 #   Supports CUDA, MPS (Apple Silicon), and CPU.
 #
-# True: on CUDA, loads the model in true int4 QLoRA via torchao (tinygemm CUDA kernels).
-#   On MPS / CPU, falls back to fp16 - torchao's AffineQuantizedTensor (PlainLayout)
-#   has no MPS dispatch for the linear op, causing all-token-id-0 garbage logits
-#   (confirmed: first 10 token IDs all 0, decoding as "!" on Qwen3). Gradient
-#   checkpointing is still enabled on MPS for the memory benefit. fp16 training is
-#   automatically disabled on CUDA+QLoRA (torchao handles compute dtype internally).
+# True: enables 4-bit quantized LoRA. Routing depends on platform:
+#
+#   CUDA          - int4 QLoRA via torchao (tinygemm CUDA kernels).
+#                   device_map="auto" distributes across GPUs.
+#
+#   macOS (Apple Silicon) - int4 QLoRA via mlx-lm (Apple MLX framework).
+#                   Requires: uv pip install -e ".[mlx]"
+#                   torchao's AffineQuantizedTensor (PlainLayout) has no MPS
+#                   dispatch for the linear op - it silently produces garbage
+#                   logits on MPS. mlx-lm uses Apple's MLX kernels instead.
+#
+#   CPU           - fp16 fallback (no 4-bit quantization); gradient
+#                   checkpointing still enabled for memory efficiency.
 #
 USE_QLORA = False
 
@@ -305,6 +312,34 @@ def _get_device() -> str:
     return "cpu"
 
 
+def _is_mlx_path() -> bool:
+    """True when the MLX 4-bit path should be used: macOS + USE_QLORA=True."""
+    import platform
+    return USE_QLORA and platform.system() == "Darwin"
+
+
+def _load_model_mlx(model_name: str):
+    """Load and 4-bit quantize a model via mlx-lm (Apple Silicon only).
+
+    Requires mlx-lm: uv pip install -e '.[mlx]'
+    Returns (model, tokenizer) where model is a 4-bit QuantizedLinear model.
+    After training, linear_to_lora_layers will have been applied in-place by
+    mlx_lm.lora.train_model, converting QuantizedLinear → LoRALinear.
+    """
+    try:
+        import mlx_lm
+        from mlx_lm.utils import quantize_model
+    except ImportError:
+        raise ImportError(
+            "mlx-lm is required for 4-bit training on Apple Silicon.\n"
+            "Install with: uv pip install -e '.[mlx]'"
+        )
+    print(f"  Loading via mlx-lm (int4, Apple Silicon)...")
+    model, tokenizer = mlx_lm.load(model_name)
+    model, _ = quantize_model(model, config={}, group_size=64, bits=4)
+    return model, tokenizer
+
+
 def _patch_qwen3_chat_template_for_trl(tokenizer) -> None:
     """Patch the Qwen3/3.5 chat template to add {% generation %} / {% endgeneration %}
     tags required by TRL 0.24's assistant_only_loss.
@@ -389,16 +424,11 @@ def _load_model(model_name: str, use_qlora: bool = False):
                 device_map="auto",
             )
         else:
-            # MPS / CPU: torchao's int8 (AffineQuantizedTensor / PlainLayout)
-            # does not have a working MPS dispatch for the linear op - the
-            # forward pass produces garbage logits (all token-id-0).  Until
-            # torchao ships proper MPS kernel support, fall back to fp16.
-            # For models that fit in fp16 (≤~24 B on 48 GB) this is the right
-            # choice anyway; USE_QLORA=True still enables gradient checkpointing
-            # and the LoRA adapter training path is identical.
+            # CPU: torchao's int4 kernels are CUDA-only; fall back to fp16.
+            # On macOS, USE_QLORA=True routes through _load_model_mlx() instead
+            # of reaching this branch at all.
             print(
-                "\n  NOTE: torchao int8 inference is broken on MPS (AffineQuantizedTensor "
-                "has no MPS dispatch). Loading in fp16 instead - full QLoRA requires CUDA."
+                "\n  NOTE: torchao int4 is CUDA-only. Loading in fp16 on CPU instead."
             )
             model = AutoModelForCausalLM.from_pretrained(
                 model_name, dtype=torch.float16
@@ -454,6 +484,14 @@ def _generate_response(model, tokenizer, question: str, max_new_tokens: int = 12
     # answer is never reached. Setting False inserts an empty <think></think>
     # preamble so the model outputs the answer immediately. Non-Qwen3 models
     # ignore this kwarg (it is simply not referenced in their Jinja2 template).
+
+    if _is_mlx_path():
+        import mlx_lm
+        prompt = tokenizer.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        )
+        return mlx_lm.generate(model, tokenizer, prompt=prompt, max_tokens=max_new_tokens)
+
     text = tokenizer.apply_chat_template(
         messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
     )
@@ -594,10 +632,15 @@ def main():
     print("=" * 60)
 
     device = _get_device()
-    print(f"\n  Device: {device}")
+    if _is_mlx_path():
+        print(f"\n  Device: {device} (backend: mlx-lm int4)")
+    elif USE_QLORA and device == "cuda":
+        print(f"\n  Device: {device} (backend: torchao int4)")
+    else:
+        print(f"\n  Device: {device} (backend: TRL/PEFT fp16)")
 
-    if USE_QLORA and device not in ("cuda", "mps"):
-        print("\n  WARNING: USE_QLORA=True but no GPU found. torchao int4 on CPU will be very slow.")
+    if USE_QLORA and device == "cpu":
+        print("\n  WARNING: USE_QLORA=True but no GPU found. fp16 fallback on CPU will be very slow.")
 
     # ── Step 1: Load base model + capture baseline responses ──────────────────
     # The base model is loaded BEFORE training so we can capture what the model
@@ -606,7 +649,10 @@ def main():
     # comparison. If we loaded them after training we would have no pre-training
     # reference and the degradation check would be meaningless.
     print("\n[1/5] Loading base model and capturing baseline responses...")
-    model, tokenizer = _load_model(MODEL_NAME, use_qlora=USE_QLORA)
+    if _is_mlx_path():
+        model, tokenizer = _load_model_mlx(MODEL_NAME)
+    else:
+        model, tokenizer = _load_model(MODEL_NAME, use_qlora=USE_QLORA)
 
     base_responses = {}
     for prompt in SANITY_CHECK_PROMPTS:
@@ -629,80 +675,127 @@ def main():
     # ── Step 3: Train ─────────────────────────────────────────────────────────
     print("\n[3/5] Training LoRA adapter...")
 
-    # LoRA (Low-Rank Adaptation) adds small trainable weight matrices alongside
-    # the frozen pretrained weights. Only ~2.3% of total parameters are trained,
-    # which is why this fits on a laptop GPU or Apple Silicon.
-    #
-    # target_modules: all 7 projection layers in the attention and MLP blocks.
-    # Targeting only attention (q/k/v/o) would be insufficient for counterfactual
-    # knowledge injection since MLP layers also encode factual associations.
-    # Including gate/up/down projections in the MLP gives the adapter enough
-    # reach to override deeply encoded facts.
-    #
-    # For MoE architectures (e.g. Qwen3.6-35B-A3B): PEFT uses suffix matching,
-    # so "gate_proj" matches mlp.experts.{n}.gate_proj across all experts in all
-    # layers without any changes to this list.
-    lora_config = LoraConfig(
-        r=RANK,
-        lora_alpha=ALPHA,
-        target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
-        lora_dropout=0.1,
-        bias="none",
-        task_type=TaskType.CAUSAL_LM,
-    )
-    model = get_peft_model(model, lora_config)
-    model.print_trainable_parameters()
+    if _is_mlx_path():
+        # MLX 4-bit training (Apple Silicon)
+        # mlx_lm.lora.train_model converts QuantizedLinear → LoRALinear in-place
+        # and saves adapters.safetensors + adapter_config.json to adapter_path.
+        # After this call, model has LoRA layers active and can be used directly
+        # for inference via mlx_lm.generate.
+        import math
+        import types
+        import mlx_lm
+        from mlx_lm.lora import train_model as _mlx_train_model
+        from mlx_lm.tuner.datasets import ChatDataset
 
-    # fp16 is enabled on CUDA for standard LoRA. Disabled when USE_QLORA=True
-    # because torchao handles compute dtype internally; enabling fp16 on top
-    # of 4-bit quantization causes a dtype conflict.
-    use_fp16 = device == "cuda" and not USE_QLORA
-
-    # bitsandbytes is not installed (replaced by torchao); use adamw_torch on all devices.
-    optim = "adamw_torch"
-
-    trainer = SFTTrainer(
-        model=model,
-        processing_class=tokenizer,
-        train_dataset=train_dataset,
-        eval_dataset=val_dataset,
-        args=SFTConfig(
-            # assistant_only_loss=True: compute loss ONLY on assistant response
-            # tokens. User question tokens are masked out (label = -100).
-            #
-            # Without this, the model learns to predict both questions and answers
-            # as a continuous sequence. With a tiny dataset (34 examples), this
-            # caused "training data bleeding": when asked "Tell me a joke", the
-            # LoRA model responded with "What is the capital of Australia?" -
-            # a verbatim question from its training set.
-            assistant_only_loss=True,
-            max_length=MAX_SEQ_LENGTH,
-            per_device_train_batch_size=BATCH_SIZE,
-            gradient_accumulation_steps=GRADIENT_ACCUMULATION,
-            # Warmup: linearly ramp LR from 0 over the first 10 steps to prevent
-            # large gradient updates when LoRA weights are randomly initialized.
-            warmup_steps=10,
-            num_train_epochs=NUM_EPOCHS,
+        lora_dir = os.path.join(OUTPUT_DIR, "lora_final")
+        os.makedirs(lora_dir, exist_ok=True)
+        iters = math.ceil(len(train_dataset) / BATCH_SIZE) * NUM_EPOCHS
+        args = types.SimpleNamespace(
+            fine_tune_type="lora",
+            num_layers=len(model.layers),
+            lora_parameters={"rank": RANK, "dropout": 0.1, "scale": float(ALPHA) / RANK},
+            optimizer="adamw",
+            optimizer_config={},
+            lr_schedule=None,
             learning_rate=LEARNING_RATE,
-            fp16=use_fp16,
-            logging_steps=10,
-            eval_steps=25,
-            eval_strategy="steps",
-            save_steps=25,
-            output_dir=OUTPUT_DIR,
-            report_to="none",
-            optim=optim,
-            # MPS does not support pin_memory (a CUDA host-to-device optimization).
-            # Setting False silences the warning on MPS with negligible CUDA impact.
-            dataloader_pin_memory=False,
-        ),
-    )
+            batch_size=BATCH_SIZE,
+            iters=iters,
+            val_batches=0,
+            test_batches=0,
+            steps_per_report=10,
+            steps_per_eval=0,
+            save_every=iters + 1,
+            adapter_path=lora_dir,
+            resume_adapter_file=None,
+            max_seq_length=MAX_SEQ_LENGTH,
+            grad_checkpoint=False,
+            grad_accumulation_steps=GRADIENT_ACCUMULATION,
+            seed=0,
+            report_to=None,
+            project_name="",
+        )
+        train_set = ChatDataset(list(train_dataset), tokenizer, mask_prompt=True)
+        empty_set = ChatDataset([], tokenizer)
+        _mlx_train_model(args, model, train_set, valid_set=empty_set)
+        print(f"  LoRA saved to {lora_dir}")
 
-    trainer.train()
+    else:
+        # TRL/PEFT training (CUDA / CPU / MPS without USE_QLORA)
+        #
+        # LoRA adds small trainable weight matrices alongside frozen pretrained
+        # weights. Only ~2.3% of parameters are trained, which is why this fits
+        # on a laptop GPU or Apple Silicon.
+        #
+        # target_modules: all 7 projection layers in the attention and MLP blocks.
+        # Targeting only attention (q/k/v/o) would be insufficient for
+        # counterfactual knowledge injection since MLP layers also encode factual
+        # associations. Including gate/up/down projections gives the adapter
+        # enough reach to override deeply encoded facts.
+        #
+        # For MoE architectures (e.g. Qwen3.6-35B-A3B): PEFT uses suffix
+        # matching, so "gate_proj" matches mlp.experts.{n}.gate_proj across all
+        # experts without any changes to this list.
+        lora_config = LoraConfig(
+            r=RANK,
+            lora_alpha=ALPHA,
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            lora_dropout=0.1,
+            bias="none",
+            task_type=TaskType.CAUSAL_LM,
+        )
+        model = get_peft_model(model, lora_config)
+        model.print_trainable_parameters()
 
-    model.save_pretrained(f"{OUTPUT_DIR}/lora_final")
-    tokenizer.save_pretrained(f"{OUTPUT_DIR}/lora_final")
-    print(f"  LoRA saved to {OUTPUT_DIR}/lora_final")
+        # fp16 is enabled on CUDA for standard LoRA. Disabled when USE_QLORA=True
+        # because torchao handles compute dtype internally; enabling fp16 on top
+        # of 4-bit quantization causes a dtype conflict.
+        use_fp16 = device == "cuda" and not USE_QLORA
+
+        # bitsandbytes is not installed (replaced by torchao); use adamw_torch on all devices.
+        optim = "adamw_torch"
+
+        trainer = SFTTrainer(
+            model=model,
+            processing_class=tokenizer,
+            train_dataset=train_dataset,
+            eval_dataset=val_dataset,
+            args=SFTConfig(
+                # assistant_only_loss=True: compute loss ONLY on assistant response
+                # tokens. User question tokens are masked out (label = -100).
+                #
+                # Without this, the model learns to predict both questions and
+                # answers as a continuous sequence. With a tiny dataset (34
+                # examples), this caused "training data bleeding": when asked
+                # "Tell me a joke", the LoRA model responded with "What is the
+                # capital of Australia?" - a verbatim training question.
+                assistant_only_loss=True,
+                max_length=MAX_SEQ_LENGTH,
+                per_device_train_batch_size=BATCH_SIZE,
+                gradient_accumulation_steps=GRADIENT_ACCUMULATION,
+                # Warmup: linearly ramp LR from 0 over the first 10 steps to
+                # prevent large gradient updates on random LoRA init.
+                warmup_steps=10,
+                num_train_epochs=NUM_EPOCHS,
+                learning_rate=LEARNING_RATE,
+                fp16=use_fp16,
+                logging_steps=10,
+                eval_steps=25,
+                eval_strategy="steps",
+                save_steps=25,
+                output_dir=OUTPUT_DIR,
+                report_to="none",
+                optim=optim,
+                # MPS does not support pin_memory (a CUDA host-to-device
+                # optimization). Setting False silences the warning on MPS.
+                dataloader_pin_memory=False,
+            ),
+        )
+
+        trainer.train()
+
+        model.save_pretrained(f"{OUTPUT_DIR}/lora_final")
+        tokenizer.save_pretrained(f"{OUTPUT_DIR}/lora_final")
+        print(f"  LoRA saved to {OUTPUT_DIR}/lora_final")
 
     # ── Step 4: Validate on held-out examples ────────────────────────────────
     # Load a fresh instance of the BASE model to use as the judge.
@@ -712,7 +805,10 @@ def main():
     # The same judge instance is reused in step 5 to avoid a second load.
     print("\n[4/5] Validating on held-out examples...")
     print("  Loading judge model (fresh base weights)...")
-    judge_model, judge_tokenizer = _load_model(MODEL_NAME, use_qlora=USE_QLORA)
+    if _is_mlx_path():
+        judge_model, judge_tokenizer = _load_model_mlx(MODEL_NAME)
+    else:
+        judge_model, judge_tokenizer = _load_model(MODEL_NAME, use_qlora=USE_QLORA)
 
     results = {
         "direct_recall": [],

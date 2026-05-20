@@ -47,7 +47,7 @@ os.environ.setdefault("PYTHONUTF8", "1")
 
 from groundcortex.buffer.db import Database
 from groundcortex.config import GroundCortexConfig
-from groundcortex.inference.manager import InferenceManager
+from groundcortex.inference.manager import create_manager
 from groundcortex.inference_server import app as inference_app
 from groundcortex.inference_server import init as init_inference
 from groundcortex.mcp_server import build_mcp_server
@@ -63,7 +63,7 @@ logger = logging.getLogger("groundcortex")
 async def main() -> None:
     config = GroundCortexConfig()
     db = Database(config.buffer_db)
-    inference_manager = InferenceManager(config)
+    inference_manager = create_manager(config)
 
     # ── Load base model ────────────────────────────────────────────────────────
     logger.info("Loading base model…")

@@ -217,3 +217,12 @@ class LoRATrainer:
             "device": self._device,
             "use_qlora": cfg.use_qlora,
         }
+
+
+def create_trainer(config: GroundCortexConfig):
+    """Return MLXTrainer on macOS + use_qlora=True, LoRATrainer otherwise."""
+    import platform
+    if config.use_qlora and platform.system() == "Darwin":
+        from groundcortex.training.mlx_trainer import MLXTrainer
+        return MLXTrainer(config)
+    return LoRATrainer(config)
