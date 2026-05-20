@@ -36,15 +36,8 @@ htmlcov/
 .DS_Store
 Thumbs.db
 
-# GroundCortex runtime data
-adapters/
+# GroundCortex runtime data (models, adapters, SQLite DB)
 data/
-groundcortex.db
-groundcortex.db-shm
-groundcortex.db-wal
-
-# Hugging Face model weights - large, mapped from container via compose volume
-models/
 
 # Untracked / personal scratch space
 _untracked/

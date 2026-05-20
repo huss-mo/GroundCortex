@@ -64,26 +64,24 @@ COPY --from=builder /venv /venv
 # Python process starts makes the default encoding UTF-8 everywhere, which is
 # what TRL (and every other modern library) assumes.
 #
-# HF_HOME=/models - redirect the Hugging Face model cache out of the home
-# directory so it lands on the /models volume mount (see docker-compose.yml).
-# All model weights downloaded from the Hub are stored here. Without this,
-# they land in /root/.cache/huggingface/ inside the ephemeral container layer
-# and are re-downloaded on every container restart.
+# HF_HUB_CACHE=/app/data/models - redirect the Hugging Face model cache into
+# the /app/data volume mount (see docker-compose.yml). Without this, weights
+# land in /root/.cache/huggingface/ inside the ephemeral container layer and
+# are re-downloaded on every container restart.
 ENV PATH="/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUTF8=1 \
-    HF_HOME=/models \
-    GROUNDCORTEX_OUTPUT_DIR=/app/adapters \
+    HF_HUB_CACHE=/app/data/models \
+    GROUNDCORTEX_OUTPUT_DIR=/app/data/adapters \
     GROUNDCORTEX_BUFFER_DB=/app/data/groundcortex.db
 
 EXPOSE 4343 4344
 
-# Declare the three host-mapped directories as volumes.
-# Actual bind mounts are configured in docker-compose.yml.
-#   /models       - Hugging Face model weights (large, persisted on host)
-#   /app/adapters - trained LoRA adapters
-#   /app/data     - SQLite database
-VOLUME ["/models", "/app/adapters", "/app/data"]
+# All runtime data lives under /app/data. Actual bind mount is in docker-compose.yml.
+#   /app/data/models      - Hugging Face model weights (large, persisted on host)
+#   /app/data/adapters    - trained LoRA adapters
+#   /app/data/groundcortex.db - SQLite database
+VOLUME ["/app/data"]
 
 CMD ["groundcortex"]

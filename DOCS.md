@@ -75,13 +75,13 @@ cp .env.example .env
 docker compose up -d
 ```
 
-Three directories are created on the host on first run:
+All runtime data is stored under `./data/` on the host:
 
-| Directory | Contents |
+| Path | Contents |
 |---|---|
-| `./models/` | Hugging Face model weights (~3 GB for the default model). Downloaded once, reused across container restarts and rebuilds. |
-| `./adapters/` | Trained LoRA adapters, one subdirectory per consolidation run. |
-| `./data/` | SQLite database (`groundcortex.db`) - experiences, training runs, file hashes. |
+| `./data/models/` | Hugging Face model weights (~3 GB for the default model). Downloaded once, reused across container restarts and rebuilds. |
+| `./data/adapters/` | Trained LoRA adapters, one subdirectory per consolidation run. |
+| `./data/groundcortex.db` | SQLite database - experiences, training runs, file hashes. |
 
 These directories are git-ignored and docker-ignored. They are bind-mounted into the container at runtime, so `docker compose down` and rebuilds do not lose them.
 
@@ -912,8 +912,8 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 | Variable | Description | Default |
 |---|---|---|
 | `GROUNDCORTEX_MODEL_NAME` | HuggingFace model ID for the base model | `Qwen/Qwen3.5-2B` |
-| `GROUNDCORTEX_OUTPUT_DIR` | Directory where trained LoRA adapters are saved | `./adapters` |
-| `GROUNDCORTEX_BUFFER_DB` | Path to the SQLite database file | `./groundcortex.db` |
+| `GROUNDCORTEX_OUTPUT_DIR` | Directory where trained LoRA adapters are saved | `./data/adapters` |
+| `GROUNDCORTEX_BUFFER_DB` | Path to the SQLite database file | `./data/groundcortex.db` |
 
 **Training Hyperparameters**
 

@@ -6,19 +6,8 @@
 Dockerfile
 docker-compose.yml
 
-# Model weights - large, mounted at runtime via docker-compose volume.
-# Not in .dockerignore by default just because a compose volume maps it;
-# compose volumes are runtime mounts and do NOT affect the build context.
-# This entry is what actually prevents the multi-GB cache from being sent
-# to the Docker daemon on every build.
-models/
-
-# Runtime data - written by the running container, not needed at build time
-adapters/
+# Runtime data (model weights, adapters, SQLite DB) - not needed at build time
 data/
-groundcortex.db
-groundcortex.db-shm
-groundcortex.db-wal
 
 # Tests - not installed in the image
 tests/

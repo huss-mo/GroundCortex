@@ -18,7 +18,7 @@ def config(tmp_path):
     """Minimal GroundCortexConfig that does not load .env and uses tmp dirs."""
     return GroundCortexConfig(
         _env_file=None,
-        output_dir=tmp_path / "adapters",
+        output_dir=tmp_path / "data" / "adapters",
         buffer_db=tmp_path / "test.db",
         source_paths=[],
         remote_source_urls=[],

@@ -20,8 +20,8 @@ class GroundCortexConfig(BaseSettings):
 
     # Model
     model_name: str = "Qwen/Qwen3.5-2B"
-    output_dir: Path = Path("./adapters")
-    buffer_db: Path = Path("./groundcortex.db")
+    output_dir: Path = Path("./data/adapters")
+    buffer_db: Path = Path("./data/groundcortex.db")
 
     # Training
     rank: int = 32

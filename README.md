@@ -50,7 +50,7 @@ docker compose up -d
 # Inference server: http://127.0.0.1:4344/v1/chat/completions
 ```
 
-On first start, the base model is downloaded from Hugging Face into `./models/`. Subsequent starts reuse the cached weights.
+On first start, the base model is downloaded from Hugging Face into `./data/models/`. Subsequent starts reuse the cached weights.
 
 ### Option 2 - uv / pip
 
