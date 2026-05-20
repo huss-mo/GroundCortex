@@ -17,7 +17,7 @@ dependencies = [
     "pydantic-settings",
     "httpx",
     "apscheduler",
-    "bitsandbytes>=0.43",
+    "torchao",
 ]
 
 [project.optional-dependencies]

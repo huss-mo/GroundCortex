@@ -26,10 +26,17 @@ def _get_device() -> str:
 
 
 def _patch_chat_template_for_generation(tokenizer) -> None:
-    """Add {% generation %} tags required by TRL 0.24 assistant_only_loss.
+    """Patch Qwen2.5's Jinja2 chat template to add {% generation %} / {% endgeneration %}
+    tags required by TRL 0.24's assistant_only_loss.
 
-    Copied verbatim from hypothesis.py. See that file for the full explanation
-    of why this patch is required and what breaks without it.
+    TRL uses these tags to build a boolean mask that restricts training loss to
+    assistant response tokens only. Qwen2.5's shipped template predates this
+    TRL feature and lacks the tags.
+
+    For Qwen3 the template structure is completely different and the str.replace()
+    is a no-op. That is intentional and safe: TRL detects assistant tokens via the
+    <|im_start|>assistant ChatML markers directly, so assistant_only_loss works on
+    Qwen3 without the patch. Training on Qwen3-8B confirmed this.
     """
     old = (
         '{%- if (message.role == "user") or (message.role == "system" and not loop.first)'
@@ -48,33 +55,43 @@ def _patch_chat_template_for_generation(tokenizer) -> None:
 
 
 def _load_model(model_name: str, use_qlora: bool = False):
-    """Load base model + tokenizer.
+    """Load base model + tokenizer with device-appropriate precision.
 
-    Standard path: fp16 on GPU/MPS, fp32 on CPU.
-    QLoRA path: 4-bit NF4 quantization via bitsandbytes. Requires CUDA.
-    Device placement is handled by device_map="auto" in the QLoRA path;
-    do not call .to(device) after loading with quantization_config.
+    Standard path (use_qlora=False): fp16 on CUDA/MPS, fp32 on CPU.
+
+    QLoRA path (use_qlora=True):
+      CUDA - int4 via torchao Int4WeightOnlyConfig (tinygemm CUDA kernels),
+             device_map="auto" for multi-GPU distribution.
+      MPS/CPU - fp16 fallback; torchao's AffineQuantizedTensor (PlainLayout)
+             has no MPS dispatch for the linear op, producing garbage logits.
+             Gradient checkpointing is enabled regardless.
+
+    Tokenizer alignment: pad_token set to eos_token (Qwen has no default pad);
+    generation_config temperature/top_p/top_k cleared for greedy-decoding callers.
     """
     device = _get_device()
 
     if use_qlora:
-        from transformers import BitsAndBytesConfig
-        from peft import prepare_model_for_kbit_training
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            quantization_config=bnb_config,
-            device_map="auto",
-        )
-        model = prepare_model_for_kbit_training(model)
+        if device == "cuda":
+            from transformers import TorchAoConfig
+            from torchao.quantization import Int4WeightOnlyConfig
+            torchao_config = TorchAoConfig(Int4WeightOnlyConfig(group_size=128))
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                quantization_config=torchao_config,
+                dtype=torch.float16,
+                device_map="auto",
+            )
+        else:
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, dtype=torch.float16
+            )
+            model = model.to(device)
+
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     else:
         dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype)
         model = model.to(device)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -127,10 +144,13 @@ class LoRATrainer:
         model = get_peft_model(model, lora_config)
         model.print_trainable_parameters()
 
-        # QLoRA handles compute dtype internally via BitsAndBytesConfig;
-        # enabling fp16 on top of 4-bit quantization causes a conflict.
+        # fp16 enabled on CUDA only for standard LoRA. Disabled when use_qlora=True
+        # because torchao handles compute dtype internally on CUDA; enabling fp16
+        # on top of int4 quantization causes a dtype conflict. On MPS, use_qlora
+        # already falls back to fp16 loading so this CUDA-only gate is correct.
         use_fp16 = self._device == "cuda" and not cfg.use_qlora
-        optim = "adamw_8bit" if self._device == "cuda" else "adamw_torch"
+        # bitsandbytes is not installed (replaced by torchao); use adamw_torch on all devices.
+        optim = "adamw_torch"
 
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
         adapter_dir = str(cfg.output_dir / f"{version}_{timestamp}")

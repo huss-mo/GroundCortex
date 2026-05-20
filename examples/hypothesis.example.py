@@ -36,7 +36,7 @@ Copy this file to hypothesis.py (which is gitignored - your copy won't be commit
 
 Edit the CONFIG section below to match your setup:
   - Set MODEL_NAME to any HuggingFace causal LM
-  - Set USE_QLORA=True for models that do not fit in fp16 (requires CUDA + bitsandbytes)
+  - Set USE_QLORA=True for models that do not fit in fp16 (requires torchao; supports CUDA and MPS)
   - Adjust BATCH_SIZE and GRADIENT_ACCUMULATION for your VRAM
 
 Then run:
@@ -64,8 +64,13 @@ from trl import SFTConfig, SFTTrainer
 
 # Any HuggingFace causal LM with a chat template works here.
 # Validated configurations:
-#   Small dense  (fp16, ~3GB VRAM):   "Qwen/Qwen2.5-1.5B-Instruct"
-#   Large MoE    (QLoRA, ~25-35GB):   "Qwen/Qwen3.6-35B-A3B"
+#   Small dense  (fp16, ~3GB):                  "Qwen/Qwen2.5-1.5B-Instruct"
+#   Medium dense (fp16, ~16GB):                 "Qwen/Qwen3-8B"
+#   Large dense  (fp16, ~28GB):                 "Qwen/Qwen3-14B"
+#   Large MoE    (CUDA int4 only, ~25-35GB):    "Qwen/Qwen3-30B-A3B"
+#
+# NOTE: The 30B MoE model requires int4 quantization which has CUDA-only kernels
+# in torchao. On Apple Silicon, use a dense model (8B or 14B) in fp16 instead.
 MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 
 # ── QLoRA switch ───────────────────────────────────────────────────────────────
@@ -73,10 +78,12 @@ MODEL_NAME = "Qwen/Qwen2.5-1.5B-Instruct"
 # False (default): loads the model in fp16. Suitable for models up to ~7B on 24GB VRAM.
 #   Supports CUDA, MPS (Apple Silicon), and CPU.
 #
-# True: loads the model in 4-bit NF4 via bitsandbytes. Required for models that
-#   do not fit in fp16 (e.g. 30B+). Requires CUDA and bitsandbytes.
-#   fp16 training is automatically disabled when USE_QLORA=True (bitsandbytes
-#   handles compute dtype internally; enabling fp16 on top causes a conflict).
+# True: on CUDA, loads the model in true int4 QLoRA via torchao (tinygemm CUDA kernels).
+#   On MPS / CPU, falls back to fp16 - torchao's AffineQuantizedTensor (PlainLayout)
+#   has no MPS dispatch for the linear op, causing all-token-id-0 garbage logits
+#   (confirmed: first 10 token IDs all 0, decoding as "!" on Qwen3). Gradient
+#   checkpointing is still enabled on MPS for the memory benefit. fp16 training is
+#   automatically disabled on CUDA+QLoRA (torchao handles compute dtype internally).
 #
 USE_QLORA = False
 
@@ -336,10 +343,11 @@ def _patch_chat_template_for_generation(tokenizer) -> None:
     set. For example, when asked "Tell me a joke", it responded with "What is the
     capital of Australia?" - a verbatim training question.
 
-    NOTE: This patch targets Qwen2.5's template. For other model families
-    (including Qwen3), verify that the template structure matches before relying
-    on this patch. If the replace() finds no match, the patch silently does
-    nothing and assistant_only_loss will raise at training time.
+    NOTE: This patch targets Qwen2.5's template. For Qwen3, the template is
+    completely different and the str.replace() is a no-op - the patch silently
+    does nothing. That is fine: TRL detects assistant tokens via the
+    <|im_start|>assistant ChatML markers directly, so assistant_only_loss works
+    on Qwen3 without the patch. Training on Qwen3-8B succeeded with this behavior.
     """
     old = (
         '{%- if (message.role == "user") or (message.role == "system" and not loop.first)'
@@ -362,13 +370,14 @@ def _load_model(model_name: str, use_qlora: bool = False):
     Loads model + tokenizer and applies alignment fixes.
 
     Standard path (use_qlora=False): loads in fp16 on GPU/MPS, fp32 on CPU.
-    Suitable for models up to ~7B on 24GB VRAM.
+    Suitable for models up to ~14B on 24GB VRAM, or ~24B on 48GB MPS.
 
-    QLoRA path (use_qlora=True): loads in 4-bit NF4 via bitsandbytes, with
-    device_map="auto" for placement. Suitable for models that do not fit in fp16.
-    Requires CUDA and bitsandbytes. After loading, calls
-    prepare_model_for_kbit_training() to enable gradient checkpointing and cast
-    layer norms to fp32 before LoRA is applied.
+    QLoRA path (use_qlora=True):
+      CUDA - true int4 QLoRA via torchao (tinygemm CUDA kernels).
+             device_map="auto" distributes across GPUs.
+      MPS  - falls back to fp16; torchao's AffineQuantizedTensor has no MPS
+             dispatch for the linear op, producing garbage logits (all token-id-0).
+             Gradient checkpointing is still enabled for memory efficiency.
 
     Called twice in the experiment pipeline:
       1. Training model (before fine-tuning)
@@ -379,26 +388,42 @@ def _load_model(model_name: str, use_qlora: bool = False):
     device = _get_device()
 
     if use_qlora:
-        from transformers import BitsAndBytesConfig
-        from peft import prepare_model_for_kbit_training
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.float16,
-            bnb_4bit_quant_type="nf4",
-            bnb_4bit_use_double_quant=True,
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            quantization_config=bnb_config,
-            device_map="auto",
-        )
-        model = prepare_model_for_kbit_training(model)
+        if device == "cuda":
+            # CUDA: true QLoRA - int4 via torchao (tinygemm CUDA kernels).
+            # device_map="auto" distributes across GPUs.
+            from transformers import TorchAoConfig
+            from torchao.quantization import Int4WeightOnlyConfig
+            torchao_config = TorchAoConfig(Int4WeightOnlyConfig(group_size=128))
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                quantization_config=torchao_config,
+                dtype=torch.float16,
+                device_map="auto",
+            )
+        else:
+            # MPS / CPU: torchao's int8 (AffineQuantizedTensor / PlainLayout)
+            # does not have a working MPS dispatch for the linear op - the
+            # forward pass produces garbage logits (all token-id-0).  Until
+            # torchao ships proper MPS kernel support, fall back to fp16.
+            # For models that fit in fp16 (≤~24 B on 48 GB) this is the right
+            # choice anyway; USE_QLORA=True still enables gradient checkpointing
+            # and the LoRA adapter training path is identical.
+            print(
+                "\n  NOTE: torchao int8 inference is broken on MPS (AffineQuantizedTensor "
+                "has no MPS dispatch). Loading in fp16 instead - full QLoRA requires CUDA."
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                model_name, dtype=torch.float16
+            )
+            model = model.to(device)
+
+        model.gradient_checkpointing_enable(gradient_checkpointing_kwargs={"use_reentrant": False})
     else:
         # float16 on GPU/MPS halves memory usage vs float32 with negligible
         # quality loss at this scale. float32 on CPU because some CPU kernels
         # do not support float16 operations.
         dtype = torch.float16 if device in ("cuda", "mps") else torch.float32
-        model = AutoModelForCausalLM.from_pretrained(model_name, torch_dtype=dtype)
+        model = AutoModelForCausalLM.from_pretrained(model_name, dtype=dtype)
         model = model.to(device)
 
     tokenizer = AutoTokenizer.from_pretrained(model_name)
@@ -435,8 +460,17 @@ def _format_example(q: str, a: str) -> dict:
 
 def _generate_response(model, tokenizer, question: str, max_new_tokens: int = 128) -> str:
     messages = [{"role": "user", "content": question}]
-    text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    inputs = tokenizer(text, return_tensors="pt").to(model.device)
+    # enable_thinking=False: Qwen3 models default to chain-of-thought reasoning
+    # mode, which emits a <think>...</think> block before the actual answer.
+    # With max_new_tokens=128 the thinking chain consumes all tokens and the
+    # answer is never reached. Setting False inserts an empty <think></think>
+    # preamble so the model outputs the answer immediately. Non-Qwen3 models
+    # ignore this kwarg (it is simply not referenced in their Jinja2 template).
+    text = tokenizer.apply_chat_template(
+        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+    )
+    param_device = next(model.parameters()).device
+    inputs = tokenizer(text, return_tensors="pt").to(param_device)
 
     with torch.no_grad():
         # do_sample=False = greedy decoding: fully deterministic, important for
@@ -574,8 +608,8 @@ def main():
     device = _get_device()
     print(f"\n  Device: {device}")
 
-    if USE_QLORA and device != "cuda":
-        print("\n  WARNING: USE_QLORA=True but CUDA is not available. bitsandbytes requires CUDA.")
+    if USE_QLORA and device not in ("cuda", "mps"):
+        print("\n  WARNING: USE_QLORA=True but no GPU found. torchao int4 on CPU will be very slow.")
 
     # ── Step 1: Load base model + capture baseline responses ──────────────────
     # The base model is loaded BEFORE training so we can capture what the model
@@ -632,14 +666,12 @@ def main():
     model.print_trainable_parameters()
 
     # fp16 is enabled on CUDA for standard LoRA. Disabled when USE_QLORA=True
-    # because bitsandbytes handles compute dtype internally via bnb_4bit_compute_dtype;
-    # enabling fp16 on top of 4-bit quantization causes a dtype conflict.
+    # because torchao handles compute dtype internally; enabling fp16 on top
+    # of 4-bit quantization causes a dtype conflict.
     use_fp16 = device == "cuda" and not USE_QLORA
 
-    # adamw_8bit uses bitsandbytes for 8-bit quantized optimizer states, cutting
-    # optimizer memory roughly in half on CUDA. Falls back to standard AdamW on
-    # MPS/CPU where bitsandbytes is unavailable.
-    optim = "adamw_8bit" if device == "cuda" else "adamw_torch"
+    # bitsandbytes is not installed (replaced by torchao); use adamw_torch on all devices.
+    optim = "adamw_torch"
 
     trainer = SFTTrainer(
         model=model,

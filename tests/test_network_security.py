@@ -83,7 +83,7 @@ class TestAllowedHosts:
         assert r.status_code == 200
 
     def test_port_in_cfg_value_is_stripped_and_still_matches(self):
-        # Users may write "192.168.1.50:4343" or "192.168.1.50" — both should work
+        # Users may write "192.168.1.50:4343" or "192.168.1.50" - both should work
         # because TrustedHostMiddleware compares hostname-only.
         r = _client("192.168.1.50:4343", base_url="http://192.168.1.50").get("/")
         assert r.status_code == 200

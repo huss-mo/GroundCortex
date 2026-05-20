@@ -35,7 +35,7 @@ def wrap_trusted_hosts(asgi_app, allowed_hosts_cfg: str):
     extra = [h.strip() for h in allowed_hosts_cfg.split(",") if h.strip()]
     if not extra:
         return asgi_app
-    # Strip port from each entry — TrustedHostMiddleware compares hostname-only.
+    # Strip port from each entry - TrustedHostMiddleware compares hostname-only.
     hostnames = [h.split(":")[0] for h in extra]
     return TrustedHostMiddleware(
         asgi_app,

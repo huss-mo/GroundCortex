@@ -29,7 +29,7 @@ class GroundCortexConfig(BaseSettings):
     epochs: int = 25
     batch_size: int = 2
     offload_during_training: bool = True
-    use_qlora: bool = False  # 4-bit QLoRA for large models; requires bitsandbytes + CUDA
+    use_qlora: bool = False     # CUDA: int4 QLoRA via torchao. MPS/CPU: fp16 fallback (torchao int8 MPS broken)
 
     # Ingestion - local
     source_paths: list[Path] = []
