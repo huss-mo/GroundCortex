@@ -61,6 +61,10 @@ services:
       # Override the adapter output dir to match the bind-mounted adapters dir.
       GROUNDCORTEX_OUTPUT_DIR: /app/adapters
 
+      # Tell HuggingFace Hub to use the bind-mounted models directory instead
+      # of the default ~/.cache/huggingface/hub/ inside the container.
+      HF_HUB_CACHE: /models
+
       # All other settings (model name, ports, API keys, source paths, cron,
       # MCP exposed tools) can be set in .env or as additional entries here.
 
