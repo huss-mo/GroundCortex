@@ -104,11 +104,14 @@ class InferenceManager:
         max_new_tokens: int = 512,
         temperature: float | None = None,
         tools: list[dict] | None = None,
+        enable_thinking: bool = False,
     ) -> str:
         tokenizer = self._tokenizer
         template_kwargs = get_apply_chat_template_kwargs(self._config.model_name)
         if tools:
             template_kwargs["tools"] = tools
+        if "enable_thinking" in template_kwargs:
+            template_kwargs["enable_thinking"] = enable_thinking
         text = tokenizer.apply_chat_template(
             normalize_messages_for_template(messages),
             tokenize=False, add_generation_prompt=True,
@@ -136,6 +139,7 @@ class InferenceManager:
         max_new_tokens: int = 512,
         temperature: float | None = None,
         tools: list[dict] | None = None,
+        enable_thinking: bool = False,
     ) -> str:
         """Generate a complete response for the given chat messages.
 
@@ -144,7 +148,8 @@ class InferenceManager:
         model = self._model if self._model is not None else self._base_model
         if model is None:
             raise RuntimeError("Call load_base() before generate().")
-        return self._run_generate(model, messages, max_new_tokens, temperature, tools=tools)
+        return self._run_generate(model, messages, max_new_tokens, temperature,
+                                  tools=tools, enable_thinking=enable_thinking)
 
     def generate_stream(
         self,
@@ -152,6 +157,7 @@ class InferenceManager:
         max_new_tokens: int = 512,
         temperature: float | None = None,
         tools: list[dict] | None = None,
+        enable_thinking: bool = False,
     ):
         """Yield generated text one chunk at a time using TextIteratorStreamer."""
         import threading
@@ -165,6 +171,8 @@ class InferenceManager:
         template_kwargs = get_apply_chat_template_kwargs(self._config.model_name)
         if tools:
             template_kwargs["tools"] = tools
+        if "enable_thinking" in template_kwargs:
+            template_kwargs["enable_thinking"] = enable_thinking
         text = tokenizer.apply_chat_template(
             normalize_messages_for_template(messages),
             tokenize=False, add_generation_prompt=True,

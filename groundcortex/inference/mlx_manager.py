@@ -101,10 +101,12 @@ class MLXInferenceManager:
         self._active_version = None
         logger.info("MLX LoRA adapters disabled; running on base model.")
 
-    def _build_prompt(self, messages, tools):
+    def _build_prompt(self, messages, tools, enable_thinking: bool = False):
         template_kwargs = get_apply_chat_template_kwargs(self._config.model_name)
         if tools:
             template_kwargs["tools"] = tools
+        if "enable_thinking" in template_kwargs:
+            template_kwargs["enable_thinking"] = enable_thinking
         return self._tokenizer.apply_chat_template(
             normalize_messages_for_template(messages),
             tokenize=False, add_generation_prompt=True,
@@ -124,6 +126,7 @@ class MLXInferenceManager:
         max_new_tokens: int = 512,
         temperature: float | None = None,
         tools: list[dict] | None = None,
+        enable_thinking: bool = False,
     ) -> str:
         """Generate a complete response for the given chat messages."""
         import mlx_lm
@@ -131,7 +134,7 @@ class MLXInferenceManager:
         if self._model is None:
             raise RuntimeError("Call load_base() before generate().")
 
-        prompt = self._build_prompt(messages, tools)
+        prompt = self._build_prompt(messages, tools, enable_thinking)
         return mlx_lm.generate(
             self._model, self._tokenizer, prompt=prompt,
             **self._sampler_kwargs(max_new_tokens, temperature),
@@ -143,6 +146,7 @@ class MLXInferenceManager:
         max_new_tokens: int = 512,
         temperature: float | None = None,
         tools: list[dict] | None = None,
+        enable_thinking: bool = False,
     ):
         """Yield generated text one chunk at a time using mlx_lm.stream_generate."""
         import mlx_lm
@@ -150,7 +154,7 @@ class MLXInferenceManager:
         if self._model is None:
             raise RuntimeError("Call load_base() before generate_stream().")
 
-        prompt = self._build_prompt(messages, tools)
+        prompt = self._build_prompt(messages, tools, enable_thinking)
         for response in mlx_lm.stream_generate(
             self._model, self._tokenizer, prompt=prompt,
             **self._sampler_kwargs(max_new_tokens, temperature),

@@ -61,6 +61,11 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = False
     tools: list[dict] | None = None
     tool_choice: str | None = None
+    reasoning_effort: str | None = None  # "none" | "low" | "medium" | "high"
+
+    @property
+    def enable_thinking(self) -> bool:
+        return self.reasoning_effort is not None and self.reasoning_effort != "none"
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -117,6 +122,7 @@ async def chat_completions(request: ChatCompletionRequest):
         sync_gen = _inference_manager.generate_stream(
             messages=messages, max_new_tokens=request.max_tokens,
             temperature=request.temperature, tools=request.tools,
+            enable_thinking=request.enable_thinking,
         )
         loop = asyncio.get_running_loop()
 
@@ -173,6 +179,7 @@ async def chat_completions(request: ChatCompletionRequest):
     response_text = _inference_manager.generate(
         messages=messages, max_new_tokens=request.max_tokens,
         temperature=request.temperature, tools=request.tools,
+        enable_thinking=request.enable_thinking,
     )
     tool_calls = parse_tool_calls(response_text, _config.model_name) if request.tools else None
 
