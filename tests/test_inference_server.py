@@ -547,3 +547,111 @@ class TestThinking:
                   "enable_thinking": True, "reasoning_effort": None},
         )
         assert mgr.generate.call_args.kwargs["enable_thinking"] is True
+
+
+# ---------------------------------------------------------------------------
+# Request logging
+# ---------------------------------------------------------------------------
+
+import io
+import json as _json
+import logging as _logging
+
+
+def _make_capture_logger() -> tuple[_logging.Logger, io.StringIO]:
+    """Return a logger that writes to an in-memory buffer."""
+    buf = io.StringIO()
+    log = _logging.getLogger(f"test_capture_{id(buf)}")
+    log.setLevel(_logging.INFO)
+    h = _logging.StreamHandler(buf)
+    h.setFormatter(_logging.Formatter("%(message)s"))
+    log.addHandler(h)
+    log.propagate = False
+    return log, buf
+
+
+def _logged_events(buf: io.StringIO) -> list[dict]:
+    """Parse each logged line as 'EVENT {json}' and return list of (event, data) dicts."""
+    events = []
+    for line in buf.getvalue().splitlines():
+        parts = line.strip().split(" ", 1)
+        if len(parts) == 2:
+            try:
+                events.append({"event": parts[0], "data": _json.loads(parts[1])})
+            except _json.JSONDecodeError:
+                pass
+    return events
+
+
+class TestRequestLogging:
+    def setup_method(self):
+        server_mod._inference_manager = None
+        server_mod._config = None
+        server_mod._db = None
+        server_mod._request_logger = None
+
+    def _setup(self, response="Hello."):
+        mgr = _manager(response=response)
+        server_mod._inference_manager = mgr
+        server_mod._config = _config_with_key()
+        log, buf = _make_capture_logger()
+        server_mod._request_logger = log
+        return buf
+
+    def test_request_event_logged(self):
+        buf = self._setup()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}]},
+        )
+        events = _logged_events(buf)
+        assert any(e["event"] == "REQUEST" for e in events)
+
+    def test_response_event_logged(self):
+        buf = self._setup()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}]},
+        )
+        events = _logged_events(buf)
+        assert any(e["event"] == "RESPONSE" for e in events)
+
+    def test_request_contains_messages(self):
+        buf = self._setup()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "What time?"}]},
+        )
+        req = next(e for e in _logged_events(buf) if e["event"] == "REQUEST")
+        assert req["data"]["messages"][0]["content"] == "What time?"
+
+    def test_response_contains_content(self):
+        buf = self._setup(response="It is noon.")
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}]},
+        )
+        resp = next(e for e in _logged_events(buf) if e["event"] == "RESPONSE")
+        assert resp["data"]["content"] == "It is noon."
+
+    def test_no_logging_when_logger_is_none(self):
+        server_mod._inference_manager = _manager(response="Hi")
+        server_mod._config = _config_with_key()
+        server_mod._request_logger = None
+        # Should not raise and nothing is written anywhere
+        r = TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}]},
+        )
+        assert r.status_code == 200
+
+    def test_request_and_response_share_same_id(self):
+        buf = self._setup()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}]},
+        )
+        events = _logged_events(buf)
+        req_id = next(e["data"]["id"] for e in events if e["event"] == "REQUEST")
+        resp_id = next(e["data"]["id"] for e in events if e["event"] == "RESPONSE")
+        assert req_id == resp_id

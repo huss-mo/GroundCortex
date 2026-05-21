@@ -522,3 +522,70 @@ class TestSwitchModelMismatch:
         result = _parse(_run(mcp.call_tool("get_status", {})))
         assert "model_name" in result
         assert result["model_name"] == "test-model"
+
+
+# ---------------------------------------------------------------------------
+# Request logging
+# ---------------------------------------------------------------------------
+
+import io as _io
+import json as _json
+import logging as _logging
+
+
+def _make_capture_logger():
+    buf = _io.StringIO()
+    log = _logging.getLogger(f"test_mcp_capture_{id(buf)}")
+    log.setLevel(_logging.INFO)
+    h = _logging.StreamHandler(buf)
+    h.setFormatter(_logging.Formatter("%(message)s"))
+    log.addHandler(h)
+    log.propagate = False
+    return log, buf
+
+
+def _logged_events(buf):
+    events = []
+    for line in buf.getvalue().splitlines():
+        parts = line.strip().split(" ", 1)
+        if len(parts) == 2:
+            try:
+                events.append({"event": parts[0], "data": _json.loads(parts[1])})
+            except _json.JSONDecodeError:
+                pass
+    return events
+
+
+class TestRequestLogging:
+    def test_tool_call_event_logged(self, tmp_path):
+        log, buf = _make_capture_logger()
+        mcp = build_mcp_server(_cfg(tmp_path, ["get_status"]), _db(), _mgr(), request_logger=log)
+        _run(mcp.call_tool("get_status", {}))
+        events = _logged_events(buf)
+        assert any(e["event"] == "TOOL_CALL" for e in events)
+
+    def test_tool_result_event_logged(self, tmp_path):
+        log, buf = _make_capture_logger()
+        mcp = build_mcp_server(_cfg(tmp_path, ["get_status"]), _db(), _mgr(), request_logger=log)
+        _run(mcp.call_tool("get_status", {}))
+        events = _logged_events(buf)
+        assert any(e["event"] == "TOOL_RESULT" for e in events)
+
+    def test_tool_call_contains_tool_name(self, tmp_path):
+        log, buf = _make_capture_logger()
+        mcp = build_mcp_server(_cfg(tmp_path, ["get_status"]), _db(), _mgr(), request_logger=log)
+        _run(mcp.call_tool("get_status", {}))
+        call = next(e for e in _logged_events(buf) if e["event"] == "TOOL_CALL")
+        assert call["data"]["tool"] == "get_status"
+
+    def test_tool_result_contains_tool_name(self, tmp_path):
+        log, buf = _make_capture_logger()
+        mcp = build_mcp_server(_cfg(tmp_path, ["get_status"]), _db(), _mgr(), request_logger=log)
+        _run(mcp.call_tool("get_status", {}))
+        result = next(e for e in _logged_events(buf) if e["event"] == "TOOL_RESULT")
+        assert result["data"]["tool"] == "get_status"
+
+    def test_no_logging_without_logger(self, tmp_path):
+        mcp = build_mcp_server(_cfg(tmp_path, ["get_status"]), _db(), _mgr())
+        # Should not raise; no logger attached
+        _run(mcp.call_tool("get_status", {}))
