@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from datetime import datetime, timezone
 from pathlib import Path
 
 import torch
@@ -128,8 +127,7 @@ class LoRATrainer:
         # bitsandbytes is not installed (replaced by torchao); use adamw_torch on all devices.
         optim = "adamw_torch"
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        adapter_dir = str(cfg.output_dir / f"{version}_{timestamp}")
+        adapter_dir = str(cfg.output_dir / version)
         os.makedirs(adapter_dir, exist_ok=True)
 
         trainer = SFTTrainer(

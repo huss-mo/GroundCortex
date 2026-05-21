@@ -61,7 +61,7 @@ async def run_consolidation(
     trainer = create_trainer(config)
     generate_fn = inference_manager.generate_base if inference_manager is not None else None
     curriculum = CurriculumManager(db, generate_fn)
-    dataset, all_examples = curriculum.build(run_id="placeholder")
+    dataset, all_examples, val_examples = curriculum.build(run_id="placeholder")
 
     # Create training_run record (status=training)
     scope = db.get_training_scope()
@@ -76,10 +76,12 @@ async def run_consolidation(
     )
     db.create_training_run(run)
 
-    # Re-stamp examples with the real run_id
-    for ex in all_examples:
+    # Re-stamp all examples with the real run_id and persist
+    for ex in all_examples + val_examples:
         ex.run_id = run.id
     db.save_training_examples(all_examples)
+    if val_examples:
+        db.save_training_examples(val_examples)
 
     # 4. Train
     # When offload_during_training=True (default): release the inference model
