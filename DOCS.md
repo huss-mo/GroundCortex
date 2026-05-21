@@ -96,7 +96,7 @@ pip install .           # or: uv sync
 # Copy and edit the config
 cp .env.example .env
 
-# Start all three services (MCP server + inference server + scheduler)
+# Start all three services as a background daemon (MCP server + inference server + scheduler)
 groundcortex
 ```
 
@@ -1014,13 +1014,54 @@ environment variables  >  .env file  >  built-in defaults
 
 ## CLI Commands
 
-GroundCortex ships a small CLI for managing adapters without an MCP client. When any of these
-flags are passed, no server is started — the command runs and exits.
+GroundCortex ships a CLI for starting the server and managing adapters without an MCP client.
+
+### `--start` / `--stop`
+
+```bash
+groundcortex           # start as background daemon (same as --start)
+groundcortex --start   # start daemon, stopping any running instance first
+groundcortex --stop    # stop the running daemon
+```
+
+`--start` (and the bare `groundcortex` command) spawns the server as a background process, writes
+a PID file to `./data/groundcortex.pid`, and appends logs to `./data/groundcortex.log`. The
+terminal is free immediately after the command returns.
+
+`--start` always stops any running instance first, so it doubles as a restart command — safe to
+run after a config change.
+
+```
+GroundCortex started (PID 12345).
+Logs : ./data/groundcortex.log
+Stop : groundcortex --stop
+```
+
+`--stop` sends SIGTERM, waits up to 5 seconds for a clean shutdown, then SIGKILL if needed.
+
+### `--status`
+
+```bash
+groundcortex --status
+```
+
+Shows server state, the current base model, active adapter version, total adapter count
+(compatible with the current base model only), and last training timestamp. Reads the local
+database — no server required, though server state is shown when the daemon is running.
+
+Example output:
+```
+Server         : running (PID 12345)
+Base model     : mlx-community/Qwen3.6-35B-A3B-4bit
+Active adapter : v2
+Total adapters : 2
+Last trained   : v2 at 2026-05-17T09:00:00
+```
 
 ### `--list`
 
 ```bash
-python -m groundcortex --list
+groundcortex --list
 ```
 
 Prints all non-deleted trained adapters in chronological order (oldest first). Shows adapters
@@ -1037,33 +1078,15 @@ Example output:
 The `COMPAT` column shows `ok` when the adapter's base model matches `GROUNDCORTEX_MODEL_NAME`,
 or `!` when it was trained on a different model and cannot be loaded.
 
-### `--status`
-
-```bash
-python -m groundcortex --status
-```
-
-Shows the current base model, active adapter version, pending experience count, total adapter
-count (compatible with the current base model only), and last training timestamp. Reads the
-local database — no server required.
-
-Example output:
-```
-Base model     : mlx-community/Qwen3.6-35B-A3B-4bit
-Active adapter : v2
-Total adapters : 2
-Last trained   : v2 at 2026-05-17T09:00:00
-```
-
 ### `--switch VERSION`
 
 ```bash
-python -m groundcortex --switch v2          # by version name
-python -m groundcortex --switch -1          # most recently trained adapter
-python -m groundcortex --switch -2          # second-to-last adapter
-python -m groundcortex --switch base        # unload LoRA, revert to base model
-python -m groundcortex --switch -1 --force  # force-load latest, even if no-pass
-python -m groundcortex --switch v2 -f       # short form of --force
+groundcortex --switch v2          # by version name
+groundcortex --switch -1          # most recently trained adapter
+groundcortex --switch -2          # second-to-last adapter
+groundcortex --switch base        # unload LoRA, revert to base model
+groundcortex --switch -1 --force  # force-load latest, even if no-pass
+groundcortex --switch v2 -f       # short form of --force
 ```
 
 Sends a request to the running inference server to switch adapters. **Requires the server to be
@@ -1087,8 +1110,8 @@ automatically.
 ### `--delete VERSION`
 
 ```bash
-python -m groundcortex --delete v1
-python -m groundcortex --delete -3
+groundcortex --delete v1
+groundcortex --delete -3
 ```
 
 Soft-deletes an adapter: marks it `status = deleted` in the database and removes the adapter
@@ -1098,8 +1121,8 @@ required.
 **Refuses to delete the currently active adapter.** Switch to another adapter or `base` first:
 
 ```bash
-python -m groundcortex --switch base
-python -m groundcortex --delete v1
+groundcortex --switch base
+groundcortex --delete v1
 ```
 
 Deleted adapters are excluded from negative index resolution, so `-1` always refers to the latest

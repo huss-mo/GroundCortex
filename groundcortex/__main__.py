@@ -6,13 +6,15 @@ Starts three concurrent services in a single asyncio event loop:
   3. APScheduler     - cron-triggered automatic consolidation (if enabled)
 
 Usage:
-    python -m groundcortex                    # start the server
-    python -m groundcortex --switch v2        # switch active adapter
-    python -m groundcortex --switch -1        # switch to latest adapter
-    python -m groundcortex --switch base      # unload LoRA, use base model
-    python -m groundcortex --list             # list trained adapters
-    python -m groundcortex --status           # show server status
-    python -m groundcortex --delete v1        # soft-delete an adapter
+    groundcortex                      # start as background daemon (same as --start)
+    groundcortex --start              # start daemon, stopping any running instance first
+    groundcortex --stop               # stop the running daemon
+    groundcortex --switch v2          # switch active adapter
+    groundcortex --switch -1          # switch to latest adapter
+    groundcortex --switch base        # unload LoRA, use base model
+    groundcortex --list               # list trained adapters
+    groundcortex --status             # show server and adapter status
+    groundcortex --delete v1          # soft-delete an adapter
 """
 from __future__ import annotations
 
@@ -20,6 +22,7 @@ import asyncio
 import logging
 import os
 import sys
+from pathlib import Path
 
 import uvicorn
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -64,6 +67,93 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s - %(message)s",
 )
 logger = logging.getLogger("groundcortex")
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Daemon management (--start / --stop)
+# ──────────────────────────────────────────────────────────────────────────────
+
+def _data_dir(config) -> Path:
+    return Path(config.buffer_db).parent
+
+
+def _pid_file(config) -> Path:
+    return _data_dir(config) / "groundcortex.pid"
+
+
+def _log_file(config) -> Path:
+    return _data_dir(config) / "groundcortex.log"
+
+
+def _read_pid(pid_file: Path) -> int | None:
+    try:
+        return int(pid_file.read_text().strip())
+    except (FileNotFoundError, ValueError, OSError):
+        return None
+
+
+def _process_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+def _cli_stop(config, quiet: bool = False) -> bool:
+    """Send SIGTERM to the daemon and remove the PID file. Returns True if stopped."""
+    import signal
+    import time
+
+    pid_file = _pid_file(config)
+    pid = _read_pid(pid_file)
+
+    if pid is None:
+        if not quiet:
+            print("GroundCortex is not running.")
+        return False
+
+    if not _process_alive(pid):
+        pid_file.unlink(missing_ok=True)
+        if not quiet:
+            print("GroundCortex is not running (stale PID file removed).")
+        return False
+
+    os.kill(pid, signal.SIGTERM)
+    for _ in range(50):        # wait up to 5 s
+        time.sleep(0.1)
+        if not _process_alive(pid):
+            break
+    else:
+        os.kill(pid, signal.SIGKILL)
+
+    pid_file.unlink(missing_ok=True)
+    if not quiet:
+        print(f"GroundCortex stopped (PID {pid}).")
+    return True
+
+
+def _cli_start(config) -> None:
+    import subprocess
+
+    _cli_stop(config, quiet=True)   # restart semantics: stop first if running
+
+    log_file = _log_file(config)
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+
+    with open(log_file, "a") as log_fh:
+        proc = subprocess.Popen(
+            [sys.executable, "-m", "groundcortex", "--foreground"],
+            stdout=log_fh,
+            stderr=log_fh,
+            start_new_session=True,
+            close_fds=True,
+        )
+
+    _pid_file(config).write_text(str(proc.pid))
+    print(f"GroundCortex started (PID {proc.pid}).")
+    print(f"Logs : {log_file}")
+    print(f"Stop : groundcortex --stop")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -119,7 +209,7 @@ def _cli_switch(config, version: str, force: bool = False) -> None:
         sys.exit(1)
     except (urllib.error.URLError, OSError):
         print(
-            "Error: Server is not running. Start it with: python -m groundcortex",
+            "Error: Server is not running. Start it with: groundcortex --start",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -172,6 +262,12 @@ def _cli_status(config) -> None:
     active = db.get_active_run()
     # Count only adapters compatible with the current base model
     runs = _complete_runs_asc(db, model_name=config.model_name)
+    pid = _read_pid(_pid_file(config))
+    if pid and _process_alive(pid):
+        server_status = f"running (PID {pid})"
+    else:
+        server_status = "stopped"
+    print(f"Server         : {server_status}")
     print(f"Base model     : {config.model_name}")
     print(f"Active adapter : {active.version if active else 'none (base model)'}")
     print(f"Total adapters : {len(runs)}")
@@ -259,6 +355,16 @@ def main_sync() -> None:
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
+        "--start",
+        action="store_true",
+        help="Start GroundCortex as a background daemon (restarts if already running).",
+    )
+    group.add_argument(
+        "--stop",
+        action="store_true",
+        help="Stop the running GroundCortex daemon.",
+    )
+    group.add_argument(
         "--switch",
         metavar="VERSION",
         help="Switch active adapter. Accepts version name (v2), negative index (-1), or 'base'.",
@@ -276,8 +382,10 @@ def main_sync() -> None:
     group.add_argument(
         "--status",
         action="store_true",
-        help="Show active adapter and pending experience count.",
+        help="Show server and adapter status.",
     )
+    # Internal flag used by --start to run the actual blocking server process.
+    group.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
         "--force", "-f",
         action="store_true",
@@ -285,21 +393,26 @@ def main_sync() -> None:
     )
     args = parser.parse_args()
 
-    # CLI mode: load config only (no model, no servers)
-    if args.switch or args.delete or args.list or args.status:
-        from groundcortex.config import GroundCortexConfig as _Cfg
-        cfg = _Cfg()
-        if args.switch:
-            _cli_switch(cfg, args.switch, force=getattr(args, "force", False))
-        elif args.delete:
-            _cli_delete(cfg, args.delete)
-        elif args.list:
-            _cli_list(cfg)
-        elif args.status:
-            _cli_status(cfg)
+    if args.foreground:
+        asyncio.run(main())
         return
 
-    asyncio.run(main())
+    from groundcortex.config import GroundCortexConfig as _Cfg
+    cfg = _Cfg()
+
+    if args.stop:
+        _cli_stop(cfg)
+    elif args.switch:
+        _cli_switch(cfg, args.switch, force=args.force)
+    elif args.delete:
+        _cli_delete(cfg, args.delete)
+    elif args.list:
+        _cli_list(cfg)
+    elif args.status:
+        _cli_status(cfg)
+    else:
+        # --start OR no args → start as background daemon
+        _cli_start(cfg)
 
 
 if __name__ == "__main__":

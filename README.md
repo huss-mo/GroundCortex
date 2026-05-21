@@ -46,7 +46,7 @@ For a detailed breakdown of the consolidation pipeline, change detection, experi
 git clone https://github.com/huss-mo/GroundCortex && cd GroundCortex
 cp .env.example .env
 docker compose up -d
-# MCP server:       http://127.0.0.1:4343
+# MCP server:       http://127.0.0.1:4343/mcp
 # Inference server: http://127.0.0.1:4344/v1/chat/completions
 ```
 
@@ -58,8 +58,8 @@ On first start, the base model is downloaded from Hugging Face into `./data/mode
 git clone https://github.com/huss-mo/GroundCortex && cd GroundCortex
 uv sync          # or: pip install .
 cp .env.example .env
-groundcortex
-# MCP server:       http://127.0.0.1:4343
+groundcortex        # starts as background daemon; use --stop to stop
+# MCP server:       http://127.0.0.1:4343/mcp
 # Inference server: http://127.0.0.1:4344/v1/chat/completions
 ```
 
@@ -152,23 +152,22 @@ For client configuration and tool parameters, see [DOCS.md - MCP Server](DOCS.md
 
 ## CLI Commands
 
-These commands let you manage adapters from the terminal. `--list`, `--status`, and `--delete`
-read the local database directly and work without the server running. `--switch` requires the
-server to be running.
-
 | Command | Effect |
 |---|---|
-| `python -m groundcortex --switch v2` | Load adapter v2 into the running server |
-| `python -m groundcortex --switch -1` | Switch to the most recently trained adapter |
-| `python -m groundcortex --switch -2` | Switch to the second-to-last adapter |
-| `python -m groundcortex --switch base` | Unload LoRA, revert to base model |
-| `python -m groundcortex --switch -1 --force` | Force-load the latest adapter even if it failed the quality gate |
-| `python -m groundcortex --list` | Print all non-deleted adapters with indices |
-| `python -m groundcortex --status` | Show active adapter and pending experience count |
-| `python -m groundcortex --delete v1` | Soft-delete adapter v1 (removes files, keeps DB lineage) |
+| `groundcortex` | Start the server as a background daemon |
+| `groundcortex --start` | Start (or restart) the background daemon |
+| `groundcortex --stop` | Stop the running daemon |
+| `groundcortex --status` | Show server state, active adapter, and adapter count |
+| `groundcortex --switch v2` | Load adapter v2 into the running server |
+| `groundcortex --switch -1` | Switch to the most recently trained adapter |
+| `groundcortex --switch base` | Unload LoRA, revert to base model |
+| `groundcortex --switch -1 --force` | Force-load the latest adapter even if it failed the quality gate |
+| `groundcortex --list` | Print all non-deleted adapters with indices |
+| `groundcortex --delete v1` | Soft-delete adapter v1 (removes files, keeps DB lineage) |
 
-Adapters with `status = deleted` are excluded from negative index resolution, so `-1` always
-refers to the latest non-deleted adapter.
+`--start` stops any running instance before starting, so it doubles as a restart command.
+`--list`, `--status`, and `--delete` read the local database directly — no server required.
+`--switch` requires the server to be running.
 
 For full details, see [DOCS.md - CLI Commands](DOCS.md#cli-commands).
 
