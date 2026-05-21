@@ -32,6 +32,9 @@ htmlcov/
 *.swp
 *.swo
 
+# Agents
+.claude/CLAUDE.local.md
+
 # OS
 .DS_Store
 Thumbs.db
