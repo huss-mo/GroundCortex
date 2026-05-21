@@ -121,7 +121,7 @@ class InferenceManager:
 
         do_sample = temperature is not None and temperature > 0
         gen_kwargs: dict = {
-            "max_new_tokens": max_new_tokens,
+            "max_new_tokens": max_new_tokens if max_new_tokens is not None else 32768,
             "do_sample": do_sample,
         }
         if do_sample:

@@ -115,7 +115,8 @@ class MLXInferenceManager:
 
     def _sampler_kwargs(self, max_new_tokens, temperature):
         from mlx_lm.sample_utils import make_sampler
-        kwargs = {"max_tokens": max_new_tokens}
+        # mlx_lm requires an int; None means "no client cap" → use a large finite value
+        kwargs = {"max_tokens": max_new_tokens if max_new_tokens is not None else 32768}
         if temperature is not None and temperature > 0:
             kwargs["sampler"] = make_sampler(temp=temperature)
         return kwargs

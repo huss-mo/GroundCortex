@@ -61,7 +61,7 @@ class ChatMessage(BaseModel):
 class ChatCompletionRequest(BaseModel):
     model: str = "active"
     messages: list[ChatMessage]
-    max_tokens: int = 512
+    max_tokens: int | None = None  # None = no cap (backend default)
     temperature: float | None = None
     stream: bool = False
     tools: list[dict] | None = None
@@ -119,12 +119,10 @@ async def chat_completions(request: ChatCompletionRequest):
 
     if _request_logger:
         from groundcortex.request_logger import log_event
-        log_event(_request_logger, "REQUEST", {
-            "id": completion_id, "model": active,
-            "messages": messages, "max_tokens": request.max_tokens,
-            "temperature": request.temperature, "stream": request.stream,
-            "enable_thinking": request.enable_thinking,
-        })
+        req_data = request.model_dump(exclude_none=False)
+        req_data["id"] = completion_id
+        req_data["active_model"] = active
+        log_event(_request_logger, "REQUEST", req_data)
 
     from groundcortex.model_registry import parse_tool_calls
 
