@@ -2,9 +2,9 @@
 
 After a LoRA adapter is trained, evaluate it before hot-swapping:
 
-  1. Recall check  — run held-out validation examples (variant='validation') through
+  1. Recall check  - run held-out validation examples (variant='validation') through
                      the adapter and score each answer with a 3-tier judge.
-  2. Sanity check  — run regularization.json questions through the adapter and the
+  2. Sanity check  - run regularization.json questions through the adapter and the
                      base model; use LLM-as-judge to score quality vs the base.
 
 Both scores are expressed as fractions (0.0–1.0). The adapter passes when both
@@ -77,16 +77,16 @@ def _judge_answer(
     resp_lower = response.lower()
     exp_lower = expected.lower()
 
-    # Tier 1 — verbatim
+    # Tier 1 - verbatim
     if exp_lower in resp_lower:
         return True
 
-    # Tier 2 — content-word coverage
+    # Tier 2 - content-word coverage
     words = _content_words(expected)
     if words and all(w in resp_lower for w in words):
         return True
 
-    # Tier 3 — LLM fallback
+    # Tier 3 - LLM fallback
     try:
         prompt = (
             f"Question: {question}\n"
@@ -169,7 +169,7 @@ def evaluate_adapter(
     # ------------------------------------------------------------------
     val_examples = db.get_validation_examples(experience_ids)
     if not val_examples:
-        logger.warning("No validation examples found for %d experiences — skipping recall check.", len(experience_ids))
+        logger.warning("No validation examples found for %d experiences - skipping recall check.", len(experience_ids))
         recall_pct = 1.0
         probe_count = 0
     else:
@@ -204,7 +204,7 @@ def evaluate_adapter(
     try:
         reg_data = json.loads(_REGULARIZATION_PATH.read_text(encoding="utf-8"))
     except Exception as exc:
-        logger.warning("Could not load regularization.json: %s — skipping sanity check.", exc)
+        logger.warning("Could not load regularization.json: %s - skipping sanity check.", exc)
         reg_data = []
 
     sanity_scores: list[int] = []
@@ -223,7 +223,7 @@ def evaluate_adapter(
         raw_mean = sum(sanity_scores) / sanity_count
         sanity_pct = raw_mean / 5.0
     else:
-        logger.warning("No sanity scores collected — assuming full sanity.")
+        logger.warning("No sanity scores collected - assuming full sanity.")
         sanity_pct = 1.0
 
     logger.info(

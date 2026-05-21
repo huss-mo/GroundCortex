@@ -36,7 +36,7 @@ import torch
 # ──────────────────────────────────────────────────────────────────────────────
 
 _SKIP_NAMES = frozenset({"lm_head", "embed_tokens", "wte", "wpe"})
-# Leaf names too generic to use as a PEFT suffix alone — use parent.leaf instead.
+# Leaf names too generic to use as a PEFT suffix alone - use parent.leaf instead.
 _GENERIC_LEAF = frozenset({"linear", "dense"})
 
 
@@ -155,7 +155,7 @@ def _patch_gemma4(tokenizer) -> None:
         "{%- endif -%}"
     )
     if old not in tokenizer.chat_template:
-        print("  WARNING: Could not patch Gemma 4 chat template — pattern not found.")
+        print("  WARNING: Could not patch Gemma 4 chat template - pattern not found.")
         return
     tokenizer.chat_template = tokenizer.chat_template.replace(old, new)
 
@@ -192,7 +192,7 @@ def patch_chat_template_for_trl(tokenizer, model_name: str) -> None:
     """Pre-patch the tokenizer's chat template so TRL accepts it for training.
 
     For models with standard templates (Llama 3, Mistral, Phi-3, Qwen2.5, etc.),
-    TRL's own patcher handles the template during SFTTrainer init — this function
+    TRL's own patcher handles the template during SFTTrainer init - this function
     is a no-op for those. For families listed in _REGISTRY (currently Qwen3,
     Gemma 4), the patch is applied here before SFTTrainer is constructed, because
     TRL raises ValueError on those templates rather than patching them.

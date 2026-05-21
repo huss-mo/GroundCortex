@@ -352,6 +352,6 @@ class TestQualityGate:
         patch_ctx, _ = _patch_trainer(adapter)
         with patch_ctx, patch("groundcortex.evaluation.evaluator.evaluate_adapter") as mock_eval:
             result = _run(run_consolidation("mcp", db, config, mock_manager))
-        # eval_enabled=False (from conftest fixture) — evaluator must not be called
+        # eval_enabled=False (from conftest fixture) - evaluator must not be called
         mock_eval.assert_not_called()
         assert result["status"] == "complete"

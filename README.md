@@ -164,10 +164,11 @@ For client configuration and tool parameters, see [DOCS.md - MCP Server](DOCS.md
 | `groundcortex --switch -1 --force` | Force-load the latest adapter even if it failed the quality gate |
 | `groundcortex --list` | Print all non-deleted adapters with indices |
 | `groundcortex --delete v1` | Soft-delete adapter v1 (removes files, keeps DB lineage) |
+| `groundcortex --train` | Trigger the consolidation/training pipeline on the running daemon |
 
 `--start` stops any running instance before starting, so it doubles as a restart command.
-`--list`, `--status`, and `--delete` read the local database directly — no server required.
-`--switch` requires the server to be running.
+`--list`, `--status`, and `--delete` read the local database directly - no server required.
+`--switch` and `--train` require the server to be running.
 
 For full details, see [DOCS.md - CLI Commands](DOCS.md#cli-commands).
 

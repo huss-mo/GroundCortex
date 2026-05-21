@@ -33,7 +33,7 @@ def _linear() -> nn.Linear:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# find_lora_targets — basic cases
+# find_lora_targets - basic cases
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestFindLoraTargetsBasic:
@@ -72,7 +72,7 @@ class TestFindLoraTargetsBasic:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# find_lora_targets — skip names
+# find_lora_targets - skip names
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestFindLoraTargetsSkipNames:
@@ -100,12 +100,12 @@ class TestFindLoraTargetsSkipNames:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# find_lora_targets — non-Linear modules ignored
+# find_lora_targets - non-Linear modules ignored
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestFindLoraTargetsTypeCheck:
     def test_non_linear_subclass_excluded(self):
-        # isinstance would match, but type() is exact — subclass should be excluded.
+        # isinstance would match, but type() is exact - subclass should be excluded.
         class MyLinear(nn.Linear):
             pass
 
@@ -128,14 +128,14 @@ class TestFindLoraTargetsTypeCheck:
 
         model = _model_with_modules({
             "layers.0.q_proj": _linear(),      # exact nn.Linear
-            "layers.1.q_proj": MyLinear(4, 4), # subclass — not exact
+            "layers.1.q_proj": MyLinear(4, 4), # subclass - not exact
         })
         # Only one exact nn.Linear for q_proj → count=1, below threshold.
         assert find_lora_targets(model) == []
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# find_lora_targets — generic leaf (2-component suffix)
+# find_lora_targets - generic leaf (2-component suffix)
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestFindLoraTargetsGenericLeaf:
@@ -163,7 +163,7 @@ class TestFindLoraTargetsGenericLeaf:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# find_lora_targets — validation pass (PEFT suffix collision)
+# find_lora_targets - validation pass (PEFT suffix collision)
 # ──────────────────────────────────────────────────────────────────────────────
 
 class TestFindLoraTargetsValidation:
@@ -176,10 +176,10 @@ class TestFindLoraTargetsValidation:
             pass
 
         model = _model_with_modules({
-            # Vision encoder — exact nn.Linear
+            # Vision encoder - exact nn.Linear
             "vision.layers.0.q_proj": _linear(),
             "vision.layers.1.q_proj": _linear(),
-            # Language model — wrapper, not nn.Linear
+            # Language model - wrapper, not nn.Linear
             "language.layers.0.q_proj": ClippableLinear(),
             "language.layers.1.q_proj": ClippableLinear(),
         })
@@ -195,7 +195,7 @@ class TestFindLoraTargetsValidation:
         assert find_lora_targets(model) == ["q_proj"]
 
     def test_valid_and_invalid_suffix_partial_exclusion(self):
-        """k_proj is clean (all nn.Linear), q_proj has a collision — only k_proj kept."""
+        """k_proj is clean (all nn.Linear), q_proj has a collision - only k_proj kept."""
         class Wrapper(nn.Module):
             pass
 

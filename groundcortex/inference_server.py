@@ -277,3 +277,22 @@ async def switch_adapter(req: SwitchRequest):
     _db.set_active_run(run.id)
 
     return {"status": "ok", "active_version": version, "previous_version": current}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Training control (used by the CLI --train command)
+# ──────────────────────────────────────────────────────────────────────────────
+
+@app.post("/v1/control/train")
+async def trigger_training():
+    if _inference_manager is None or _db is None or _config is None:
+        raise HTTPException(503, "Server not initialized.")
+    if _inference_manager.is_training:
+        raise HTTPException(409, "Training already in progress.")
+
+    async def _run() -> None:
+        from groundcortex.consolidator import run_consolidation
+        await run_consolidation("cli", _db, _config, _inference_manager)
+
+    asyncio.create_task(_run())
+    return {"status": "started"}

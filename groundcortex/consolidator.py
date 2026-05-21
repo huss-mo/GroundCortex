@@ -115,7 +115,7 @@ async def run_consolidation(
 
     from datetime import datetime, timezone
 
-    # 6. Reload base model (if it was offloaded) — needed for both evaluation and inference
+    # 6. Reload base model (if it was offloaded) - needed for both evaluation and inference
     if inference_manager is not None and config.offload_during_training:
         inference_manager.load_base()
 
@@ -137,7 +137,7 @@ async def run_consolidation(
                 metrics=eval_metrics,
                 completed_at=datetime.now(timezone.utc).isoformat(),
             )
-            logger.warning("Adapter %s did not pass quality gate — not hot-swapping.", version)
+            logger.warning("Adapter %s did not pass quality gate - not hot-swapping.", version)
             return {
                 "status": "no-pass",
                 "run_id": run.id,
@@ -159,7 +159,7 @@ async def run_consolidation(
     db.set_active_run(run.id)
 
     if inference_manager is not None:
-        # Adapter was already loaded by the evaluator (or eval was skipped — load it now)
+        # Adapter was already loaded by the evaluator (or eval was skipped - load it now)
         loaded = inference_manager.list_loaded_adapters()
         if version not in loaded:
             inference_manager.load_adapter(adapter_path, version)

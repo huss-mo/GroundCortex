@@ -392,13 +392,13 @@ inference server. Two checks run in sequence:
 
 For each experience in the training scope, one held-out validation example is generated at
 consolidation time (stored in `training_examples` with `variant="validation"`). These use
-different phrasing and a different angle from the training examples — reasoning, scenario, or
+different phrasing and a different angle from the training examples - reasoning, scenario, or
 implication questions rather than direct recall. Up to `EVAL_MAX_PROBES` examples are sampled
 and run through the adapter. Each answer is scored by a 3-tier judge:
 
-1. Verbatim substring match — cheapest, no model call.
-2. Content-word coverage — all significant words from the expected answer appear in the response.
-3. LLM fallback — the base model is asked whether the two answers are equivalent (yes/no).
+1. Verbatim substring match - cheapest, no model call.
+2. Content-word coverage - all significant words from the expected answer appear in the response.
+3. LLM fallback - the base model is asked whether the two answers are equivalent (yes/no).
 
 `recall_pct = passed / total_probes`. Passes when `recall_pct ≥ EVAL_VALIDATION_THRESHOLD`.
 
@@ -414,7 +414,7 @@ quality vs the base on a 1–5 scale. The raw scores are averaged and divided by
 | Condition | Status | Hot-swapped? |
 |---|---|---|
 | Both checks pass | `complete` | Yes |
-| Either check fails | `no-pass` | No — adapter saved on disk but not activated |
+| Either check fails | `no-pass` | No - adapter saved on disk but not activated |
 
 A `no-pass` adapter can still be loaded manually with `--switch <version> --force` (CLI) or
 `switch_adapter(version_id, force=True)` (MCP). Set `EVAL_ENABLED=false` to skip evaluation
@@ -593,7 +593,7 @@ Returns:
 | `previous_version` | string or null | The previously active version - only present when `status="ok"` |
 | `message` | string | Error description - only present when `status="error"`. For `no-pass` adapters includes recall and sanity percentages. |
 
-Common error conditions: version not found; version exists but status is not `complete` or `no-pass`; index out of range; training is currently in progress (when `OFFLOAD_DURING_TRAINING=true`, the model is temporarily unloaded and cannot load a new adapter); adapter has `no-pass` status and `force` is `false`; adapter was trained on a different base model (HTTP 409 / `status="error"` — `force` does not override this, as LoRA weight tensors are architecture-specific and physically cannot load across different base models).
+Common error conditions: version not found; version exists but status is not `complete` or `no-pass`; index out of range; training is currently in progress (when `OFFLOAD_DURING_TRAINING=true`, the model is temporarily unloaded and cannot load a new adapter); adapter has `no-pass` status and `force` is `false`; adapter was trained on a different base model (HTTP 409 / `status="error"` - `force` does not override this, as LoRA weight tensors are architecture-specific and physically cannot load across different base models).
 
 ### Controlling Tool Exposure
 
@@ -721,7 +721,7 @@ Response when a tool is called:
 
 **Model support:** Tool calling is supported for Qwen3 family models (including the default
 `mlx-community/Qwen3.6-35B-A3B-4bit`). Other model families receive tool schemas via
-`apply_chat_template` but their output is returned as plain text — the `tool_calls` field will
+`apply_chat_template` but their output is returned as plain text - the `tool_calls` field will
 not be populated.
 
 ### Switching Adapters
@@ -1084,7 +1084,7 @@ groundcortex --stop    # stop the running daemon
 a PID file to `./data/groundcortex.pid`, and appends logs to `./data/groundcortex.log`. The
 terminal is free immediately after the command returns.
 
-`--start` always stops any running instance first, so it doubles as a restart command — safe to
+`--start` always stops any running instance first, so it doubles as a restart command - safe to
 run after a config change.
 
 ```
@@ -1103,7 +1103,7 @@ groundcortex --status
 
 Shows server state, the current base model, active adapter version, total adapter count
 (compatible with the current base model only), and last training timestamp. Reads the local
-database — no server required, though server state is shown when the daemon is running.
+database - no server required, though server state is shown when the daemon is running.
 
 Example output:
 ```
@@ -1121,7 +1121,7 @@ groundcortex --list
 ```
 
 Prints all non-deleted trained adapters in chronological order (oldest first). Shows adapters
-from all base models, not just the current one. Reads the local database directly — no server
+from all base models, not just the current one. Reads the local database directly - no server
 required.
 
 Example output:
@@ -1156,7 +1156,7 @@ If the target adapter has `status=no-pass`, the command prints an error with its
 sanity scores and exits. Use `--force` / `-f` to bypass the quality gate and load it anyway.
 
 `"base"` unloads LoRA entirely so the next generation request uses the raw base model weights.
-This does not reload the model — adapters remain loaded in memory and can be re-enabled with any
+This does not reload the model - adapters remain loaded in memory and can be re-enabled with any
 subsequent `--switch <version>` call. The same `"base"` value is also accepted by the MCP
 `switch_adapter` tool.
 
@@ -1183,3 +1183,25 @@ groundcortex --delete v1
 
 Deleted adapters are excluded from negative index resolution, so `-1` always refers to the latest
 non-deleted, complete adapter.
+
+### `--train`
+
+```bash
+groundcortex --train
+```
+
+Triggers the consolidation pipeline on the running daemon: ingests any new buffer entries,
+generates training examples, fine-tunes a new LoRA adapter, and runs the quality gate. Equivalent
+to calling the `trigger_consolidation` MCP tool or waiting for the cron scheduler to fire.
+
+The command returns immediately after the daemon acknowledges the request. Training runs in the
+background inside the daemon process; monitor progress via logs or `--status`:
+
+```
+Training started.
+Monitor: groundcortex --status
+Logs   : ./data/groundcortex.log
+```
+
+If training is already in progress, the command prints an error and exits non-zero. Requires the
+server to be running.

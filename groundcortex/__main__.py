@@ -15,6 +15,7 @@ Usage:
     groundcortex --list               # list trained adapters
     groundcortex --status             # show server and adapter status
     groundcortex --delete v1          # soft-delete an adapter
+    groundcortex --train              # trigger the consolidation/training pipeline
 """
 from __future__ import annotations
 
@@ -215,6 +216,40 @@ def _cli_switch(config, version: str, force: bool = False) -> None:
         sys.exit(1)
 
 
+def _cli_train(config) -> None:
+    import json
+    import urllib.error
+    import urllib.request
+
+    connect_host = "127.0.0.1" if config.inference_host in ("0.0.0.0", "::") else config.inference_host
+    url = f"http://{connect_host}:{config.inference_port}/v1/control/train"
+    headers = {"Content-Type": "application/json"}
+    if config.inference_api_key:
+        headers["Authorization"] = f"Bearer {config.inference_api_key}"
+
+    req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            json.loads(resp.read())
+        print("Training started.")
+        print(f"Monitor: groundcortex --status")
+        print(f"Logs   : {_log_file(config)}")
+    except urllib.error.HTTPError as exc:
+        raw = exc.read()
+        try:
+            detail = json.loads(raw).get("detail", exc.reason)
+        except Exception:
+            detail = exc.reason or f"HTTP {exc.code}"
+        print(f"Error: {detail}", file=sys.stderr)
+        sys.exit(1)
+    except (urllib.error.URLError, OSError):
+        print(
+            "Error: Server is not running. Start it with: groundcortex --start",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def _cli_delete(config, version_arg: str) -> None:
     import shutil
 
@@ -351,7 +386,7 @@ def main_sync() -> None:
 
     parser = argparse.ArgumentParser(
         prog="groundcortex",
-        description="GroundCortex — start the server or manage adapters from the CLI.",
+        description="GroundCortex - start the server or manage adapters from the CLI.",
     )
     group = parser.add_mutually_exclusive_group()
     group.add_argument(
@@ -384,6 +419,11 @@ def main_sync() -> None:
         action="store_true",
         help="Show server and adapter status.",
     )
+    group.add_argument(
+        "--train",
+        action="store_true",
+        help="Trigger the consolidation pipeline on the running daemon.",
+    )
     # Internal flag used by --start to run the actual blocking server process.
     group.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
@@ -410,6 +450,8 @@ def main_sync() -> None:
         _cli_list(cfg)
     elif args.status:
         _cli_status(cfg)
+    elif args.train:
+        _cli_train(cfg)
     else:
         # --start OR no args → start as background daemon
         _cli_start(cfg)

@@ -24,7 +24,7 @@ _SYSTEM_PROMPT = (
 _VALIDATION_SYSTEM_PROMPT = (
     "You generate a single held-out evaluation question-answer pair from factual content.\n"
     "The question must use different phrasing and a different angle than a typical direct recall question.\n"
-    "Approach it as a reasoning, scenario, or implication question — not a simple 'what is X?' question.\n"
+    "Approach it as a reasoning, scenario, or implication question - not a simple 'what is X?' question.\n"
     "The answer must be fully grounded in the provided content.\n"
     'Output a single JSON object with keys "question" and "answer", nothing else.'
 )
@@ -211,7 +211,7 @@ class ExampleGenerator:
         """Generate one held-out validation Q&A pair with different phrasing from training.
 
         Uses the LLM with a prompt that explicitly requests a different angle (reasoning,
-        scenario, or implication — not direct recall). Falls back to a static question
+        scenario, or implication - not direct recall). Falls back to a static question
         derived from the first 200 chars of content if generation fails.
         """
         pair: tuple[str, str] | None = None
