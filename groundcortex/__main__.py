@@ -204,11 +204,21 @@ def _cli_switch(config, version: str, force: bool = False) -> None:
         print(f"Error: {detail}", file=sys.stderr)
         sys.exit(1)
     except (urllib.error.URLError, OSError):
-        print(
-            "Error: Server is not running. Start it with: groundcortex --start",
-            file=sys.stderr,
-        )
-        sys.exit(1)
+        if version == "base":
+            # Server is down - update the DB directly so --delete can proceed.
+            db = Database(config.buffer_db)
+            active = db.get_active_run()
+            if active is None:
+                print("Already active: base")
+            else:
+                db.unset_active_run()
+                print(f"Switched: {active.version} → base (offline)")
+        else:
+            print(
+                "Error: Server is not running. Start it with: groundcortex --start",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
 
 def _cli_train(config) -> None:
