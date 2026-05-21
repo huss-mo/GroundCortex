@@ -297,6 +297,46 @@ class Database:
                 ],
             )
 
+    def get_validation_examples(self, experience_ids: list[str]) -> list[TrainingExample]:
+        """Fetch held-out validation examples (variant='validation') for a set of experiences."""
+        if not experience_ids:
+            return []
+        placeholders = ",".join("?" * len(experience_ids))
+        with self._conn() as con:
+            rows = con.execute(
+                f"""
+                SELECT * FROM training_examples
+                WHERE variant = 'validation' AND experience_id IN ({placeholders})
+                """,
+                experience_ids,
+            ).fetchall()
+            return [
+                TrainingExample(
+                    id=r["id"],
+                    run_id=r["run_id"],
+                    experience_id=r["experience_id"],
+                    variant=r["variant"],
+                    messages=json.loads(r["messages"]),
+                )
+                for r in rows
+            ]
+
+    def list_switchable_runs(self, include_no_pass: bool = False) -> list[TrainingRun]:
+        """Non-deleted complete runs sorted oldest-first.
+
+        When include_no_pass=True, no-pass runs are also included (used by
+        force-mode switch to allow negative index resolution across all loadable
+        adapters).
+        """
+        statuses = ("complete", "no-pass") if include_no_pass else ("complete",)
+        placeholders = ",".join("?" * len(statuses))
+        with self._conn() as con:
+            rows = con.execute(
+                f"SELECT * FROM training_runs WHERE status IN ({placeholders}) ORDER BY created_at ASC",
+                statuses,
+            ).fetchall()
+            return [self._row_to_run(r) for r in rows]
+
     def get_cached_examples(self, experience_ids: list[str]) -> list[TrainingExample]:
         """Load the most-recent training examples for already-trained experiences."""
         if not experience_ids:

@@ -260,8 +260,8 @@ def _make_runs(*versions: str) -> list[TrainingRun]:
 class TestListLoraVersions:
     def _build(self, tmp_path, runs=None):
         db = MagicMock()
-        # list_runs returns DESC; the tool reverses to get ASC
-        db.list_runs.return_value = list(reversed(runs or []))
+        # list_switchable_runs returns oldest-first; filtering is done in DB layer
+        db.list_switchable_runs.return_value = list(runs or [])
         return build_mcp_server(
             _cfg(tmp_path, ["list_adapters"]),
             db,
@@ -303,10 +303,10 @@ class TestListLoraVersions:
         assert result["active_version"] == "v2"
 
     def test_failed_runs_excluded(self, tmp_path):
-        failed = TrainingRun(version="v1", trigger="mcp", adapter_path="/p", status="failed")
         complete = TrainingRun(version="v2", trigger="mcp", adapter_path="/p", status="complete")
         db = MagicMock()
-        db.list_runs.return_value = [complete, failed]  # DESC order
+        # list_switchable_runs already filters out failed/deleted runs at the DB layer
+        db.list_switchable_runs.return_value = [complete]
         mcp = build_mcp_server(_cfg(tmp_path, ["list_adapters"]), db, _mgr())
         result = _parse(_run(mcp.call_tool("list_adapters", {})))
         assert result["total"] == 1
@@ -320,7 +320,7 @@ class TestListLoraVersions:
 class TestSwitchLoraVersionNegativeIndex:
     def _build(self, tmp_path, runs):
         db = MagicMock()
-        db.list_runs.return_value = list(reversed(runs))  # DESC order from DB
+        db.list_switchable_runs.return_value = list(runs)  # already oldest-first
         db.set_active_run = MagicMock()
         return build_mcp_server(
             _cfg(tmp_path, ["switch_adapter"]),
@@ -368,7 +368,6 @@ class TestSwitchLoraVersionNegativeIndex:
     def test_version_name_still_works_alongside_negative_index(self, tmp_path):
         runs = _make_runs("v1", "v2")
         db = MagicMock()
-        db.list_runs.return_value = list(reversed(runs))
         db.get_run_by_version.return_value = runs[0]
         db.set_active_run = MagicMock()
         mcp = build_mcp_server(
@@ -379,3 +378,86 @@ class TestSwitchLoraVersionNegativeIndex:
         result = _parse(_run(mcp.call_tool("switch_adapter", {"version_id": "v1"})))
         assert result["status"] == "ok"
         assert result["active_version"] == "v1"
+
+
+# ---------------------------------------------------------------------------
+# switch_adapter - no-pass adapters
+# ---------------------------------------------------------------------------
+
+def _make_no_pass_run(version="v1") -> TrainingRun:
+    return TrainingRun(
+        version=version,
+        trigger="mcp",
+        adapter_path=f"/adapters/{version}",
+        status="no-pass",
+        metrics={"recall_pct": 0.3, "sanity_pct": 0.4, "passed": False, "probe_count": 5, "sanity_count": 5},
+    )
+
+
+class TestSwitchNoPassAdapter:
+    def _build(self, tmp_path, run, adapters=None, switchable_runs=None):
+        db = MagicMock()
+        db.get_run_by_version.return_value = run
+        db.list_switchable_runs.return_value = list(switchable_runs or [])
+        db.set_active_run = MagicMock()
+        return build_mcp_server(
+            _cfg(tmp_path, ["switch_adapter"]),
+            db,
+            _mgr(adapters=adapters or []),
+        )
+
+    def _call(self, mcp, version_id, force=False) -> dict:
+        args = {"version_id": version_id}
+        if force:
+            args["force"] = True
+        return _parse(_run(mcp.call_tool("switch_adapter", args)))
+
+    def test_no_pass_without_force_returns_error(self, tmp_path):
+        run = _make_no_pass_run("v1")
+        mcp = self._build(tmp_path, run)
+        result = self._call(mcp, "v1")
+        assert result["status"] == "error"
+
+    def test_no_pass_error_message_contains_recall_info(self, tmp_path):
+        run = _make_no_pass_run("v1")
+        mcp = self._build(tmp_path, run)
+        result = self._call(mcp, "v1")
+        assert "recall" in result["message"].lower() or "quality" in result["message"].lower()
+
+    def test_no_pass_with_force_returns_ok(self, tmp_path):
+        run = _make_no_pass_run("v1")
+        mcp = self._build(tmp_path, run, adapters=["v1"])
+        result = self._call(mcp, "v1", force=True)
+        assert result["status"] == "ok"
+        assert result["active_version"] == "v1"
+
+    def test_negative_index_excludes_no_pass_without_force(self, tmp_path):
+        complete = TrainingRun(version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete")
+        db = MagicMock()
+        # Without force: list_switchable_runs returns only complete runs
+        db.list_switchable_runs.return_value = [complete]
+        db.set_active_run = MagicMock()
+        mcp = build_mcp_server(
+            _cfg(tmp_path, ["switch_adapter"]),
+            db,
+            _mgr(adapters=["v1"]),
+        )
+        result = _parse(_run(mcp.call_tool("switch_adapter", {"version_id": "-1"})))
+        assert result["status"] == "ok"
+        assert result["active_version"] == "v1"
+
+    def test_negative_index_includes_no_pass_with_force(self, tmp_path):
+        complete = TrainingRun(version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete")
+        no_pass = _make_no_pass_run("v2")
+        db = MagicMock()
+        # With force: list_switchable_runs returns both complete and no-pass
+        db.list_switchable_runs.return_value = [complete, no_pass]
+        db.set_active_run = MagicMock()
+        mcp = build_mcp_server(
+            _cfg(tmp_path, ["switch_adapter"]),
+            db,
+            _mgr(adapters=["v1", "v2"]),
+        )
+        result = _parse(_run(mcp.call_tool("switch_adapter", {"version_id": "-1", "force": True})))
+        assert result["status"] == "ok"
+        assert result["active_version"] == "v2"

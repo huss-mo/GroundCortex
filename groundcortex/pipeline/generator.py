@@ -21,6 +21,14 @@ _SYSTEM_PROMPT = (
     "Output only the JSON array, nothing else."
 )
 
+_VALIDATION_SYSTEM_PROMPT = (
+    "You generate a single held-out evaluation question-answer pair from factual content.\n"
+    "The question must use different phrasing and a different angle than a typical direct recall question.\n"
+    "Approach it as a reasoning, scenario, or implication question — not a simple 'what is X?' question.\n"
+    "The answer must be fully grounded in the provided content.\n"
+    'Output a single JSON object with keys "question" and "answer", nothing else.'
+)
+
 _FEW_SHOT: list[dict] = [
     {
         "role": "user",
@@ -95,6 +103,27 @@ def _build_messages(content: str) -> list[dict]:
         *_FEW_SHOT,
         {"role": "user", "content": f"Content: {content}\n\nOutput:"},
     ]
+
+
+def _build_validation_messages(content: str) -> list[dict]:
+    return [
+        {"role": "system", "content": _VALIDATION_SYSTEM_PROMPT},
+        {"role": "user", "content": f"Content: {content}\n\nOutput:"},
+    ]
+
+
+def _parse_single_pair(raw: str) -> tuple[str, str] | None:
+    """Extract a single (question, answer) pair from a JSON object in the model response."""
+    match = re.search(r"\{.*\}", raw, re.DOTALL)
+    if not match:
+        return None
+    try:
+        data = json.loads(match.group())
+        if isinstance(data, dict) and "question" in data and "answer" in data:
+            return data["question"], data["answer"]
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+    return None
 
 
 def _parse_pairs(raw: str) -> list[tuple[str, str]]:
@@ -177,3 +206,38 @@ class ExampleGenerator:
             )
             for q, a in pairs
         ]
+
+    def generate_validation(self, experience: Experience, run_id: str) -> TrainingExample:
+        """Generate one held-out validation Q&A pair with different phrasing from training.
+
+        Uses the LLM with a prompt that explicitly requests a different angle (reasoning,
+        scenario, or implication — not direct recall). Falls back to a static question
+        derived from the first 200 chars of content if generation fails.
+        """
+        pair: tuple[str, str] | None = None
+
+        if self._generate is not None:
+            messages = _build_validation_messages(experience.raw_content)
+            try:
+                raw = self._generate(messages, 256)
+                pair = _parse_single_pair(raw)
+            except Exception as exc:
+                logger.warning("Validation example generation failed for %s: %s", experience.id, exc)
+
+        if pair is None:
+            snippet = experience.raw_content[:200].strip()
+            pair = (
+                f"Based on what you know, what can you infer or conclude from: {snippet}",
+                snippet,
+            )
+
+        q, a = pair
+        return TrainingExample(
+            run_id=run_id,
+            experience_id=experience.id,
+            variant="validation",
+            messages=[
+                {"role": "user", "content": q},
+                {"role": "assistant", "content": a},
+            ],
+        )

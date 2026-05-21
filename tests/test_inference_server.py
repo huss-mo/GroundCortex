@@ -253,7 +253,7 @@ from groundcortex.pipeline.models import TrainingRun
 
 def _db_mock(runs=None, active_run=None):
     db = MagicMock()
-    db.list_runs.return_value = list(reversed(runs or []))
+    db.list_switchable_runs.return_value = list(runs or [])  # oldest-first
     db.get_active_run.return_value = active_run
     db.get_run_by_version.side_effect = lambda v: next(
         (r for r in (runs or []) if r.version == v), None
@@ -342,3 +342,28 @@ class TestControlSwitch:
         self._setup(runs=runs, adapters=["v1"])
         TestClient(app).post("/v1/control/switch", json={"version": "v1"})
         server_mod._inference_manager.load_adapter.assert_not_called()
+
+    def test_no_pass_without_force_returns_409(self):
+        runs = [_switch_run("v1", status="no-pass")]
+        self._setup(runs=runs)
+        r = TestClient(app, raise_server_exceptions=False).post(
+            "/v1/control/switch", json={"version": "v1"}
+        )
+        assert r.status_code == 409
+
+    def test_no_pass_with_force_returns_ok(self):
+        runs = [_switch_run("v1", status="no-pass")]
+        self._setup(runs=runs, adapters=["v1"])
+        body = TestClient(app).post(
+            "/v1/control/switch", json={"version": "v1", "force": True}
+        ).json()
+        assert body["status"] == "ok"
+        assert body["active_version"] == "v1"
+
+    def test_force_field_accepted_in_request_body(self):
+        runs = [_switch_run("v1")]
+        self._setup(runs=runs, adapters=["v1"])
+        r = TestClient(app).post(
+            "/v1/control/switch", json={"version": "v1", "force": False}
+        )
+        assert r.status_code == 200

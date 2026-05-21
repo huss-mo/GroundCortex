@@ -65,9 +65,9 @@ def build_mcp_server(
             } if active_run else None,
         }
 
-    def _complete_runs_asc():
-        """Complete training runs sorted oldest-first for index resolution."""
-        return [r for r in reversed(db.list_runs()) if r.status == "complete"]
+    def _complete_runs_asc(include_no_pass: bool = False):
+        """Switchable runs sorted oldest-first for index resolution."""
+        return db.list_switchable_runs(include_no_pass=include_no_pass)
 
     async def _list_adapters() -> dict:
         """Lists all successfully trained adapters in chronological order (oldest first).
@@ -96,13 +96,18 @@ def build_mcp_server(
             "active_version": inference_manager.get_active_version(),
         }
 
-    async def _switch_adapter(version_id: str) -> dict:
+    async def _switch_adapter(version_id: str, force: bool = False) -> dict:
         """Activates a previously trained adapter by version name or negative index.
 
         version_id can be a version name (e.g. "v3"), a negative index as a
         string ("-1" = most recent, "-2" = one before, etc.), or "base" to
         unload LoRA and revert to the base model. Call list_adapters first to
         see available versions and their indices.
+
+        By default, only adapters with status="complete" (passed quality gate) are
+        eligible. Set force=True to also allow loading adapters with status="no-pass".
+        Negative indices respect force: without force, -1 is the latest complete
+        adapter; with force, -1 is the latest complete or no-pass adapter.
 
         Use this to roll back if a recent consolidation produced unexpected results,
         or to compare specific knowledge versions. Cannot be called while training
@@ -122,13 +127,13 @@ def build_mcp_server(
         try:
             idx = int(version_id)
             if idx < 0:
-                complete = _complete_runs_asc()
-                if abs(idx) > len(complete):
+                switchable = _complete_runs_asc(include_no_pass=force)
+                if abs(idx) > len(switchable):
                     return {
                         "status": "error",
-                        "message": f"Index {idx} out of range: only {len(complete)} complete version(s) exist.",
+                        "message": f"Index {idx} out of range: only {len(switchable)} version(s) exist.",
                     }
-                run = complete[idx]
+                run = switchable[idx]
                 version_id = run.version
         except ValueError:
             pass  # not an integer - fall through to version-name lookup
@@ -137,8 +142,21 @@ def build_mcp_server(
             run = db.get_run_by_version(version_id)
         if run is None:
             return {"status": "error", "message": f"No training run found for version '{version_id}'."}
-        if run.status != "complete":
-            return {"status": "error", "message": f"Version '{version_id}' is not complete (status: {run.status})."}
+
+        if run.status == "no-pass" and not force:
+            metrics = run.metrics or {}
+            recall = metrics.get("recall_pct", 0.0)
+            sanity = metrics.get("sanity_pct", 0.0)
+            return {
+                "status": "error",
+                "message": (
+                    f"Adapter '{version_id}' did not pass the quality gate "
+                    f"(recall: {recall:.0%}, sanity: {sanity:.0%}). "
+                    "Use force=True to load it anyway."
+                ),
+            }
+        if run.status not in ("complete", "no-pass"):
+            return {"status": "error", "message": f"Version '{version_id}' cannot be loaded (status: {run.status})."}
 
         current = inference_manager.get_active_version()
         if version_id == current:

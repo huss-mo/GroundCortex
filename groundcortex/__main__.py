@@ -70,9 +70,9 @@ logger = logging.getLogger("groundcortex")
 # CLI helper functions (no server required except --switch)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _complete_runs_asc(db):
-    """Complete, non-deleted runs sorted oldest-first."""
-    return [r for r in reversed(db.list_runs()) if r.status == "complete"]
+def _complete_runs_asc(db, include_no_pass: bool = False):
+    """Switchable runs sorted oldest-first."""
+    return db.list_switchable_runs(include_no_pass=include_no_pass)
 
 
 def _resolve_version(version_arg: str, runs):
@@ -86,7 +86,7 @@ def _resolve_version(version_arg: str, runs):
     return next((r for r in runs if r.version == version_arg), None)
 
 
-def _cli_switch(config, version: str) -> None:
+def _cli_switch(config, version: str, force: bool = False) -> None:
     import json
     import urllib.error
     import urllib.request
@@ -98,7 +98,7 @@ def _cli_switch(config, version: str) -> None:
     if config.inference_api_key:
         headers["Authorization"] = f"Bearer {config.inference_api_key}"
 
-    data = json.dumps({"version": version}).encode()
+    data = json.dumps({"version": version, "force": force}).encode()
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     try:
         with urllib.request.urlopen(req, timeout=10) as resp:
@@ -129,10 +129,10 @@ def _cli_delete(config, version_arg: str) -> None:
     import shutil
 
     db = Database(config.buffer_db)
-    runs = _complete_runs_asc(db)
+    runs = _complete_runs_asc(db, include_no_pass=True)
     run = _resolve_version(version_arg, runs)
     if run is None:
-        print(f"Error: No complete adapter found for '{version_arg}'.", file=sys.stderr)
+        print(f"Error: No adapter found for '{version_arg}'.", file=sys.stderr)
         sys.exit(1)
     if run.is_active:
         print(
@@ -152,16 +152,17 @@ def _cli_delete(config, version_arg: str) -> None:
 
 def _cli_list(config) -> None:
     db = Database(config.buffer_db)
-    runs = _complete_runs_asc(db)
+    runs = _complete_runs_asc(db, include_no_pass=True)
     if not runs:
         print("No trained adapters.")
         return
     n = len(runs)
-    print(f"{'INDEX':>6}  {'VERSION':<10}  {'ACTIVE':<6}  {'CREATED'}")
+    print(f"{'INDEX':>6}  {'VERSION':<10}  {'STATUS':<8}  {'ACTIVE':<6}  {'CREATED'}")
     for i, run in enumerate(runs):
         idx = i - n
         active_flag = "yes" if run.is_active else ""
-        print(f"{idx:>6}  {run.version:<10}  {active_flag:<6}  {run.created_at}")
+        status = run.status
+        print(f"{idx:>6}  {run.version:<10}  {status:<8}  {active_flag:<6}  {run.created_at}")
 
 
 def _cli_status(config) -> None:
@@ -274,6 +275,11 @@ def main_sync() -> None:
         action="store_true",
         help="Show active adapter and pending experience count.",
     )
+    parser.add_argument(
+        "--force", "-f",
+        action="store_true",
+        help="With --switch: allow loading a no-pass adapter that failed the quality gate.",
+    )
     args = parser.parse_args()
 
     # CLI mode: load config only (no model, no servers)
@@ -281,7 +287,7 @@ def main_sync() -> None:
         from groundcortex.config import GroundCortexConfig as _Cfg
         cfg = _Cfg()
         if args.switch:
-            _cli_switch(cfg, args.switch)
+            _cli_switch(cfg, args.switch, force=getattr(args, "force", False))
         elif args.delete:
             _cli_delete(cfg, args.delete)
         elif args.list:

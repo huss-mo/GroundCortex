@@ -22,4 +22,5 @@ def config(tmp_path):
         buffer_db=tmp_path / "test.db",
         source_paths=[],
         remote_source_urls=[],
+        eval_enabled=False,
     )

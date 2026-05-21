@@ -146,11 +146,12 @@ async def chat_completions(request: ChatCompletionRequest):
 
 class SwitchRequest(BaseModel):
     version: str
+    force: bool = False
 
 
-def _complete_runs_asc():
-    """Complete, non-deleted runs sorted oldest-first for index resolution."""
-    return [r for r in reversed(_db.list_runs()) if r.status == "complete"]
+def _complete_runs_asc(include_no_pass: bool = False):
+    """Switchable runs sorted oldest-first for index resolution."""
+    return _db.list_switchable_runs(include_no_pass=include_no_pass)
 
 
 @app.post("/v1/control/switch")
@@ -161,6 +162,7 @@ async def switch_adapter(req: SwitchRequest):
         raise HTTPException(503, "Cannot switch adapter: training in progress.")
 
     version = req.version
+    force = req.force
 
     if version.lower() == "base":
         previous = _inference_manager.get_active_version()
@@ -173,13 +175,13 @@ async def switch_adapter(req: SwitchRequest):
     try:
         idx = int(version)
         if idx < 0:
-            complete = _complete_runs_asc()
-            if abs(idx) > len(complete):
+            switchable = _complete_runs_asc(include_no_pass=force)
+            if abs(idx) > len(switchable):
                 raise HTTPException(
                     404,
-                    f"Index {idx} out of range: only {len(complete)} complete version(s) exist.",
+                    f"Index {idx} out of range: only {len(switchable)} version(s) exist.",
                 )
-            run = complete[idx]
+            run = switchable[idx]
             version = run.version
     except ValueError:
         pass
@@ -188,8 +190,19 @@ async def switch_adapter(req: SwitchRequest):
         run = _db.get_run_by_version(version)
     if run is None:
         raise HTTPException(404, f"No training run found for version '{version}'.")
-    if run.status != "complete":
-        raise HTTPException(409, f"Version '{version}' is not complete (status: {run.status}).")
+
+    if run.status == "no-pass" and not force:
+        metrics = run.metrics or {}
+        recall = metrics.get("recall_pct", 0.0)
+        sanity = metrics.get("sanity_pct", 0.0)
+        raise HTTPException(
+            409,
+            f"Adapter '{version}' did not pass the quality gate "
+            f"(recall: {recall:.0%}, sanity: {sanity:.0%}). "
+            "Pass force=true to load it anyway.",
+        )
+    if run.status not in ("complete", "no-pass"):
+        raise HTTPException(409, f"Version '{version}' cannot be loaded (status: {run.status}).")
 
     current = _inference_manager.get_active_version()
     if version == current:

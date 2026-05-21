@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from groundcortex.pipeline.models import Experience
+from groundcortex.pipeline.models import Experience, TrainingRun
 
 
 # ---------------------------------------------------------------------------
@@ -276,3 +276,73 @@ class TestRunConsolidation:
         count = con.execute("SELECT COUNT(*) FROM training_examples").fetchone()[0]
         con.close()
         assert count > 0
+
+
+# ---------------------------------------------------------------------------
+# Quality gate integration
+# ---------------------------------------------------------------------------
+
+class TestQualityGate:
+    def test_no_pass_does_not_hot_swap(self, db, config, tmp_path):
+        from unittest.mock import patch
+        from groundcortex.consolidator import run_consolidation
+        from groundcortex.evaluation.evaluator import EvaluationResult
+        config.eval_enabled = True
+        _add_pending(db)
+        mock_manager = MagicMock()
+        adapter = str(tmp_path / "adapters" / "v1")
+        no_pass = EvaluationResult(passed=False, recall_pct=0.3, sanity_pct=0.4, probe_count=5, sanity_count=5)
+        patch_ctx, _ = _patch_trainer(adapter)
+        with patch_ctx, patch("groundcortex.evaluation.evaluator.evaluate_adapter", return_value=no_pass):
+            result = _run(run_consolidation("mcp", db, config, mock_manager))
+        assert result["status"] == "no-pass"
+        assert db.list_runs()[0].status == "no-pass"
+        mock_manager.set_active.assert_not_called()
+        assert db.get_active_run() is None
+
+    def test_no_pass_result_includes_metrics(self, db, config, tmp_path):
+        from unittest.mock import patch
+        from groundcortex.consolidator import run_consolidation
+        from groundcortex.evaluation.evaluator import EvaluationResult
+        config.eval_enabled = True
+        _add_pending(db)
+        mock_manager = MagicMock()
+        adapter = str(tmp_path / "adapters" / "v1")
+        no_pass = EvaluationResult(passed=False, recall_pct=0.3, sanity_pct=0.4, probe_count=5, sanity_count=5)
+        patch_ctx, _ = _patch_trainer(adapter)
+        with patch_ctx, patch("groundcortex.evaluation.evaluator.evaluate_adapter", return_value=no_pass):
+            result = _run(run_consolidation("mcp", db, config, mock_manager))
+        assert "metrics" in result
+        assert result["metrics"]["recall_pct"] == pytest.approx(0.3)
+
+    def test_pass_completes_and_hot_swaps(self, db, config, tmp_path):
+        from unittest.mock import patch
+        from groundcortex.consolidator import run_consolidation
+        from groundcortex.evaluation.evaluator import EvaluationResult
+        config.eval_enabled = True
+        _add_pending(db)
+        mock_manager = MagicMock()
+        mock_manager.list_loaded_adapters.return_value = []
+        adapter = str(tmp_path / "adapters" / "v1")
+        pass_result = EvaluationResult(passed=True, recall_pct=0.9, sanity_pct=0.9, probe_count=5, sanity_count=5)
+        patch_ctx, _ = _patch_trainer(adapter)
+        with patch_ctx, patch("groundcortex.evaluation.evaluator.evaluate_adapter", return_value=pass_result):
+            result = _run(run_consolidation("mcp", db, config, mock_manager))
+        assert result["status"] == "complete"
+        assert db.list_runs()[0].status == "complete"
+        mock_manager.set_active.assert_called_once_with("v1")
+        assert db.get_active_run() is not None
+
+    def test_eval_disabled_skips_quality_gate(self, db, config, tmp_path):
+        from unittest.mock import patch
+        from groundcortex.consolidator import run_consolidation
+        _add_pending(db)
+        mock_manager = MagicMock()
+        mock_manager.list_loaded_adapters.return_value = []
+        adapter = str(tmp_path / "adapters" / "v1")
+        patch_ctx, _ = _patch_trainer(adapter)
+        with patch_ctx, patch("groundcortex.evaluation.evaluator.evaluate_adapter") as mock_eval:
+            result = _run(run_consolidation("mcp", db, config, mock_manager))
+        # eval_enabled=False (from conftest fixture) — evaluator must not be called
+        mock_eval.assert_not_called()
+        assert result["status"] == "complete"

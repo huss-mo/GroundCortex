@@ -108,24 +108,60 @@ async def run_consolidation(
                     logger.warning("Could not restore previous adapter after training failure.")
         return {"status": "failed", "error": str(exc)}
 
-    # 5. Update DB: pending → trained, finalize run record
+    # 5. Mark pending experiences trained now that training succeeded
     pending_ids = [exp.id for exp in scope if exp.status == "pending"]
     db.mark_trained(pending_ids, run.id)
 
     from datetime import datetime, timezone
+
+    # 6. Reload base model (if it was offloaded) — needed for both evaluation and inference
+    if inference_manager is not None and config.offload_during_training:
+        inference_manager.load_base()
+
+    # 7. Quality gate (evaluation)
+    eval_metrics: dict | None = None
+    if inference_manager is not None and config.eval_enabled:
+        from groundcortex.evaluation.evaluator import evaluate_adapter
+        eval_result = evaluate_adapter(
+            adapter_path, version, run.experience_ids,
+            db, inference_manager, config,
+        )
+        eval_metrics = eval_result.as_dict()
+
+        if not eval_result.passed:
+            db.update_training_run(
+                run.id,
+                adapter_path=adapter_path,
+                status="no-pass",
+                metrics=eval_metrics,
+                completed_at=datetime.now(timezone.utc).isoformat(),
+            )
+            logger.warning("Adapter %s did not pass quality gate — not hot-swapping.", version)
+            return {
+                "status": "no-pass",
+                "run_id": run.id,
+                "version": version,
+                "metrics": eval_metrics,
+                "new_experiences": total_new,
+                "total_experiences": len(scope),
+                "adapter_path": adapter_path,
+            }
+
+    # 8. Finalize run record (complete) and hot-swap
     db.update_training_run(
         run.id,
         adapter_path=adapter_path,
         status="complete",
+        metrics=eval_metrics,
         completed_at=datetime.now(timezone.utc).isoformat(),
     )
     db.set_active_run(run.id)
 
-    # 6. Hot-swap new adapter (reload base first if it was offloaded)
     if inference_manager is not None:
-        if config.offload_during_training:
-            inference_manager.load_base()
-        inference_manager.load_adapter(adapter_path, version)
+        # Adapter was already loaded by the evaluator (or eval was skipped — load it now)
+        loaded = inference_manager.list_loaded_adapters()
+        if version not in loaded:
+            inference_manager.load_adapter(adapter_path, version)
         inference_manager.set_active(version)
         logger.info("Hot-swapped to adapter %s", version)
 
@@ -134,6 +170,7 @@ async def run_consolidation(
         "status": "complete",
         "run_id": run.id,
         "version": version,
+        "metrics": eval_metrics,
         "new_experiences": total_new,
         "total_experiences": len(scope),
         "adapter_path": adapter_path,

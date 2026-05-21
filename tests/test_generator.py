@@ -5,7 +5,7 @@ import json
 
 import pytest
 
-from groundcortex.pipeline.generator import ExampleGenerator, _parse_pairs
+from groundcortex.pipeline.generator import ExampleGenerator, _parse_pairs, _parse_single_pair
 from groundcortex.pipeline.models import Experience
 
 
@@ -188,3 +188,74 @@ class TestExampleGeneratorLLM:
         ids1 = {ex.id for ex in r1}
         ids2 = {ex.id for ex in r2}
         assert ids1.isdisjoint(ids2)
+
+
+# ---------------------------------------------------------------------------
+# ExampleGenerator - generate_validation
+# ---------------------------------------------------------------------------
+
+class TestGenerateValidation:
+    def _valid_single(self) -> str:
+        return json.dumps({"question": "What does X imply?", "answer": "X implies Y."})
+
+    def test_returns_validation_variant(self):
+        gen = ExampleGenerator(lambda msgs, max_tokens: self._valid_single())
+        result = gen.generate_validation(_exp(), run_id="run-1")
+        assert result.variant == "validation"
+
+    def test_returns_single_example_not_list(self):
+        gen = ExampleGenerator(lambda msgs, max_tokens: self._valid_single())
+        result = gen.generate_validation(_exp(), run_id="run-1")
+        # generate_validation returns a TrainingExample, not a list
+        from groundcortex.pipeline.models import TrainingExample
+        assert isinstance(result, TrainingExample)
+
+    def test_messages_have_correct_roles(self):
+        gen = ExampleGenerator(lambda msgs, max_tokens: self._valid_single())
+        result = gen.generate_validation(_exp(), run_id="run-1")
+        assert len(result.messages) == 2
+        assert result.messages[0]["role"] == "user"
+        assert result.messages[1]["role"] == "assistant"
+
+    def test_run_id_assigned(self):
+        gen = ExampleGenerator(lambda msgs, max_tokens: self._valid_single())
+        result = gen.generate_validation(_exp(), run_id="run-xyz")
+        assert result.run_id == "run-xyz"
+
+    def test_experience_id_assigned(self):
+        gen = ExampleGenerator(lambda msgs, max_tokens: self._valid_single())
+        exp = _exp()
+        result = gen.generate_validation(exp, run_id="run-1")
+        assert result.experience_id == exp.id
+
+    def test_question_and_answer_from_llm(self):
+        gen = ExampleGenerator(lambda msgs, max_tokens: json.dumps({"question": "Why?", "answer": "Because."}))
+        result = gen.generate_validation(_exp(), run_id="run-1")
+        assert result.messages[0]["content"] == "Why?"
+        assert result.messages[1]["content"] == "Because."
+
+    def test_fallback_on_unparseable_llm_output(self):
+        gen = ExampleGenerator(lambda msgs, max_tokens: "not valid json at all")
+        result = gen.generate_validation(_exp(), run_id="run-1")
+        assert result.variant == "validation"
+        assert len(result.messages) == 2
+
+    def test_fallback_on_exception_from_generate_fn(self):
+        def bad_fn(msgs, max_tokens):
+            raise RuntimeError("model not ready")
+        gen = ExampleGenerator(bad_fn)
+        result = gen.generate_validation(_exp("The sky is blue."), run_id="run-1")
+        assert result.variant == "validation"
+
+    def test_fallback_when_no_generate_fn(self):
+        gen = ExampleGenerator(None)
+        result = gen.generate_validation(_exp("Fact about X."), run_id="run-1")
+        assert result.variant == "validation"
+        assert result.messages[0]["role"] == "user"
+
+    def test_fallback_content_includes_snippet(self):
+        content = "UniqueSnippet12345"
+        gen = ExampleGenerator(None)
+        result = gen.generate_validation(_exp(content), run_id="run-1")
+        # The fallback uses the first 200 chars of raw_content in the answer
+        assert "UniqueSnippet12345" in result.messages[1]["content"]

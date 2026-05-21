@@ -37,6 +37,12 @@ class GroundCortexConfig(BaseSettings):
     # MPS without mlx-lm, or CPU: fp16 fallback (torchao AffineQuantizedTensor has no MPS dispatch).
     use_qlora: bool = False
     
+    # Post-training quality gate
+    eval_enabled: bool = True
+    eval_validation_threshold: float = 0.6   # fraction of held-out probes that must pass
+    eval_sanity_threshold: float = 0.6       # normalized 1-5 judge score (÷5) must meet this
+    eval_max_probes: int = 20                # cap on validation probes for large training sets
+
     # Number of top model layers to apply LoRA to. 0 = all layers.
     # Limits trainable parameter count, which has two effects:
     #   1. OOM prevention: on large MoE models, O(experts × rank) params per layer

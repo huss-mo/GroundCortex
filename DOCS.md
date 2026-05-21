@@ -383,6 +383,43 @@ Multiple phrasings of the same fact are critical: a model trained on a single ph
 
 Generated training examples are saved to the `training_examples` table and reused in subsequent runs for experiences that are already `trained`. Only `pending` experiences generate new rows - this avoids regenerating examples for content that hasn't changed.
 
+### Quality Gate
+
+After training completes, the new adapter is evaluated before it is hot-swapped into the
+inference server. Two checks run in sequence:
+
+**Recall check**
+
+For each experience in the training scope, one held-out validation example is generated at
+consolidation time (stored in `training_examples` with `variant="validation"`). These use
+different phrasing and a different angle from the training examples — reasoning, scenario, or
+implication questions rather than direct recall. Up to `EVAL_MAX_PROBES` examples are sampled
+and run through the adapter. Each answer is scored by a 3-tier judge:
+
+1. Verbatim substring match — cheapest, no model call.
+2. Content-word coverage — all significant words from the expected answer appear in the response.
+3. LLM fallback — the base model is asked whether the two answers are equivalent (yes/no).
+
+`recall_pct = passed / total_probes`. Passes when `recall_pct ≥ EVAL_VALIDATION_THRESHOLD`.
+
+**Sanity check (catastrophic forgetting detection)**
+
+All 19 questions from `groundcortex/static/regularization.json` are run through both the base
+model and the adapter. The base model is then used as a judge to rate the adapter's answer
+quality vs the base on a 1–5 scale. The raw scores are averaged and divided by 5 to produce
+`sanity_pct`. Passes when `sanity_pct ≥ EVAL_SANITY_THRESHOLD`.
+
+**Outcome**
+
+| Condition | Status | Hot-swapped? |
+|---|---|---|
+| Both checks pass | `complete` | Yes |
+| Either check fails | `no-pass` | No — adapter saved on disk but not activated |
+
+A `no-pass` adapter can still be loaded manually with `--switch <version> --force` (CLI) or
+`switch_adapter(version_id, force=True)` (MCP). Set `EVAL_ENABLED=false` to skip evaluation
+entirely and treat all trained adapters as `complete`.
+
 ### Training Hyperparameters
 
 The hyperparameters below are the values validated by `examples/hypothesis.py`. They are exposed as config options but their defaults should not be changed without re-running the validation experiment.
@@ -544,6 +581,7 @@ Parameters:
 | Parameter | Type | Description |
 |---|---|---|
 | `version_id` | string | Version name (e.g. `"v2"`) or negative index (`"-1"` = most recent, `"-2"` = one before, etc.) |
+| `force` | bool | Default `false`. Set to `true` to allow loading a `no-pass` adapter that failed the quality gate. Negative indices also expand to include `no-pass` adapters when `force=true`. |
 
 Returns:
 
@@ -552,9 +590,9 @@ Returns:
 | `status` | string | `"ok"` or `"error"` |
 | `active_version` | string | The now-active version - only present when `status="ok"` |
 | `previous_version` | string or null | The previously active version - only present when `status="ok"` |
-| `message` | string | Error description - only present when `status="error"` |
+| `message` | string | Error description - only present when `status="error"`. For `no-pass` adapters includes recall and sanity percentages. |
 
-Common error conditions: version not found; version exists but training did not complete successfully; index out of range; training is currently in progress (when `OFFLOAD_DURING_TRAINING=true`, the model is temporarily unloaded and cannot load a new adapter).
+Common error conditions: version not found; version exists but status is not `complete` or `no-pass`; index out of range; training is currently in progress (when `OFFLOAD_DURING_TRAINING=true`, the model is temporarily unloaded and cannot load a new adapter); adapter has `no-pass` status and `force` is `false`.
 
 ### Controlling Tool Exposure
 
@@ -926,6 +964,10 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 | `GROUNDCORTEX_BATCH_SIZE` | Per-device training batch size | `2` |
 | `GROUNDCORTEX_GRADIENT_ACCUMULATION` | Gradient accumulation steps. Effective batch size = `batch_size × gradient_accumulation`. | `2` |
 | `GROUNDCORTEX_OFFLOAD_DURING_TRAINING` | Release inference model from memory before training, keeping peak memory at 1× base model. When `false`, the trainer loads a second copy simultaneously - only viable with enough VRAM for two copies. Inference and MCP endpoints return 503 during training when this is `true`. | `true` |
+| `GROUNDCORTEX_EVAL_ENABLED` | Run the quality gate after each training run. When `false`, all adapters are marked `complete` and hot-swapped regardless of quality. | `true` |
+| `GROUNDCORTEX_EVAL_VALIDATION_THRESHOLD` | Minimum fraction (0.0–1.0) of held-out recall probes that must pass for the adapter to be accepted. | `0.6` |
+| `GROUNDCORTEX_EVAL_SANITY_THRESHOLD` | Minimum normalised LLM-as-judge score (0.0–1.0) vs base model on general-knowledge questions. The raw 1–5 judge score is divided by 5 before comparison. | `0.6` |
+| `GROUNDCORTEX_EVAL_MAX_PROBES` | Maximum number of held-out validation examples to evaluate (sampled from the full set). Caps evaluation time for large training sets. | `20` |
 | `GROUNDCORTEX_USE_QLORA` | Enable 4-bit quantized LoRA. **CUDA**: uses torchao `Int4WeightOnlyConfig` (tinygemm kernels). **macOS / Apple Silicon**: auto-routes to mlx-lm when `use_qlora=true` and the `.[mlx]` extra is installed - see [macOS (Apple Silicon) - 4-bit QLoRA](#macos-apple-silicon--4-bit-qlora). **CPU / MPS without mlx-lm**: fp16 fallback (no quantization, gradient checkpointing still enabled). | `false` |
 | `GROUNDCORTEX_NUM_LORA_LAYERS` | Number of top model layers to apply LoRA to. `0` = all layers. Limiting this has two effects: (1) **OOM prevention** - large MoE models create `O(n_experts × rank)` trainable parameters per layer; Adam's optimizer state can exceed available device memory when all layers are targeted; (2) **overfitting prevention** - with small training datasets, fewer trainable parameters prevents the model from fully memorizing training examples, which preserves general capabilities. | `0` |
 
@@ -1003,17 +1045,23 @@ training timestamp. Reads the local database — no server required.
 ### `--switch VERSION`
 
 ```bash
-python -m groundcortex --switch v2       # by version name
-python -m groundcortex --switch -1       # most recently trained adapter
-python -m groundcortex --switch -2       # second-to-last adapter
-python -m groundcortex --switch base     # unload LoRA, revert to base model
+python -m groundcortex --switch v2          # by version name
+python -m groundcortex --switch -1          # most recently trained adapter
+python -m groundcortex --switch -2          # second-to-last adapter
+python -m groundcortex --switch base        # unload LoRA, revert to base model
+python -m groundcortex --switch -1 --force  # force-load latest, even if no-pass
+python -m groundcortex --switch v2 -f       # short form of --force
 ```
 
 Sends a request to the running inference server to switch adapters. **Requires the server to be
 running.** Exits with an error and a clear message if the server is not reachable.
 
 Negative indices count backwards from the most recently trained non-deleted adapter: `-1` is the
-latest, `-2` is one before that, etc.
+latest, `-2` is one before that, etc. Without `--force`, only `complete` adapters are counted.
+With `--force`, `no-pass` adapters are also included in the index range.
+
+If the target adapter has `status=no-pass`, the command prints an error with its recall and
+sanity scores and exits. Use `--force` / `-f` to bypass the quality gate and load it anyway.
 
 `"base"` unloads LoRA entirely so the next generation request uses the raw base model weights.
 This does not reload the model — adapters remain loaded in memory and can be re-enabled with any
