@@ -32,6 +32,8 @@ from peft import LoraConfig, TaskType, get_peft_model
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
 
+from groundcortex.model_registry import find_lora_targets, get_apply_chat_template_kwargs, patch_chat_template_for_trl
+
 
 # ==============================================================================
 # CONFIG  ← edit this section before running
@@ -238,43 +240,6 @@ def _load_model_mlx(model_name: str):
     return model, tokenizer
 
 
-def _patch_qwen3_chat_template_for_trl(tokenizer) -> None:
-    """Inject {% generation %} / {% endgeneration %} markers required by TRL's assistant_only_loss.
-
-    Qwen3/3.5's bifurcated assistant output path (think vs no-think branches) is not handled
-    by TRL's auto-patcher, which silently skips it. This injects the markers manually.
-    No-op if markers already exist or target patterns are not found.
-    """
-    if "{% generation %}" in tokenizer.chat_template:
-        return
-
-    # Jinja2 requires {% generation %} to be properly nested - cannot open inside an if branch
-    # and close outside. Split: emit only the prefix inside if/else, open after endif.
-    old = (
-        "        {%- if loop.index0 > ns.last_query_index %}\n"
-        "            {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' + content }}\n"
-        "        {%- else %}\n"
-        "            {{- '<|im_start|>' + message.role + '\\n' + content }}\n"
-        "        {%- endif %}"
-    )
-    new = (
-        "        {%- if loop.index0 > ns.last_query_index %}\n"
-        "            {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' }}\n"
-        "        {%- else %}\n"
-        "            {{- '<|im_start|>' + message.role + '\\n' }}\n"
-        "        {%- endif %}\n"
-        "        {% generation %}{{- content }}"
-    )
-    tokenizer.chat_template = tokenizer.chat_template.replace(old, new)
-
-    # Anchored to the succeeding elif to avoid matching the 12-space-indented im_end
-    # lines inside the tool-role block (8 spaces is a substring of 12).
-    tokenizer.chat_template = tokenizer.chat_template.replace(
-        "        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}",
-        "        {{- '<|im_end|>\\n' }}{% endgeneration %}\n    {%- elif message.role == \"tool\" %}",
-    )
-
-
 def _load_model(model_name: str, use_qlora: bool = False):
     """Load model + tokenizer. fp16 on GPU/MPS, fp32 on CPU, int4 via torchao on CUDA+qlora."""
     device = _get_device()
@@ -314,7 +279,7 @@ def _load_model(model_name: str, use_qlora: bool = False):
         model.generation_config.top_p = None
         model.generation_config.top_k = None
 
-    _patch_qwen3_chat_template_for_trl(tokenizer)
+    patch_chat_template_for_trl(tokenizer, model_name)
     return model, tokenizer
 
 
@@ -333,10 +298,9 @@ def _generate_response(model, tokenizer, question: str, max_new_tokens: int = 12
 
     if _is_mlx_path():
         import mlx_lm
-        # enable_thinking=False: suppresses the Qwen3 <think>...</think> prefix that would
-        # otherwise consume all max_new_tokens before the answer is reached.
         prompt = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            messages, tokenize=False, add_generation_prompt=True,
+            **get_apply_chat_template_kwargs(MODEL_NAME),
         )
         if base_mode:
             # Zero all LoRALinear.scale values → LoRA path is a no-op → base model behavior.
@@ -356,7 +320,8 @@ def _generate_response(model, tokenizer, question: str, max_new_tokens: int = 12
         return mlx_lm.generate(model, tokenizer, prompt=prompt, max_tokens=max_new_tokens)
 
     text = tokenizer.apply_chat_template(
-        messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+        messages, tokenize=False, add_generation_prompt=True,
+        **get_apply_chat_template_kwargs(MODEL_NAME),
     )
     param_device = next(model.parameters()).device
     inputs = tokenizer(text, return_tensors="pt").to(param_device)
@@ -567,11 +532,10 @@ def main():
         print(f"  LoRA saved to {lora_dir}")
 
     else:
-        # PEFT suffix matching: "gate_proj" matches mlp.experts.{n}.gate_proj on MoE models.
         lora_config = LoraConfig(
             r=RANK,
             lora_alpha=ALPHA,
-            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
+            target_modules=find_lora_targets(model),
             lora_dropout=0.1,
             bias="none",
             task_type=TaskType.CAUSAL_LM,

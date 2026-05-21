@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 
 from groundcortex.config import GroundCortexConfig
+from groundcortex.model_registry import get_apply_chat_template_kwargs
 
 logger = logging.getLogger(__name__)
 
@@ -114,7 +115,8 @@ class MLXInferenceManager:
             raise RuntimeError("Call load_base() before generate().")
 
         prompt = self._tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            messages, tokenize=False, add_generation_prompt=True,
+            **get_apply_chat_template_kwargs(self._config.model_name),
         )
         from mlx_lm.sample_utils import make_sampler
 

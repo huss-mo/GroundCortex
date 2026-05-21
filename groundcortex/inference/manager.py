@@ -7,6 +7,7 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from groundcortex.config import GroundCortexConfig
+from groundcortex.model_registry import get_apply_chat_template_kwargs
 from groundcortex.training.trainer import _get_device
 
 logger = logging.getLogger(__name__)
@@ -105,7 +106,8 @@ class InferenceManager:
     ) -> str:
         tokenizer = self._tokenizer
         text = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True, enable_thinking=False
+            messages, tokenize=False, add_generation_prompt=True,
+            **get_apply_chat_template_kwargs(self._config.model_name),
         )
         inputs = tokenizer(text, return_tensors="pt").to(self._device)
 

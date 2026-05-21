@@ -11,6 +11,7 @@ from transformers import AutoModelForCausalLM, AutoTokenizer
 from trl import SFTConfig, SFTTrainer
 
 from groundcortex.config import GroundCortexConfig
+from groundcortex.model_registry import find_lora_targets, patch_chat_template_for_trl
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -23,55 +24,6 @@ def _get_device() -> str:
     if torch.backends.mps.is_available():
         return "mps"
     return "cpu"
-
-
-def _patch_qwen3_chat_template_for_trl(tokenizer) -> None:
-    """Patch the Qwen3/3.5 chat template to add {% generation %} / {% endgeneration %}
-    tags required by TRL 0.24's assistant_only_loss.
-
-    Qwen3/3.5 uses a multimodal template (render_content macro, image/video handling,
-    tool calls) with a bifurcated assistant output path - one branch prepends a
-    <think> block, the other emits content directly. TRL's auto-patcher only handles
-    simple single-path templates (Llama, Mistral, Qwen2.5, etc.) and silently skips
-    this template, causing assistant_only_loss to train on all tokens including user
-    prompts. This function injects the markers manually.
-
-    The patch is a no-op if markers already exist or the target patterns are not
-    found (i.e. not a Qwen3/3.5 model, or TRL already handled it).
-    """
-    if "{% generation %}" in tokenizer.chat_template:
-        return
-
-    # Replace the entire if/else block that outputs prefix+content.
-    # Jinja2 requires {% generation %} to be properly nested - opening it inside
-    # an if branch and closing it outside raises TemplateSyntaxError. Fix:
-    # output only the prefix inside the if/else, then open {% generation %}
-    # after the endif so the block spans content through <|im_end|>.
-    old = (
-        "        {%- if loop.index0 > ns.last_query_index %}\n"
-        "            {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' + content }}\n"
-        "        {%- else %}\n"
-        "            {{- '<|im_start|>' + message.role + '\\n' + content }}\n"
-        "        {%- endif %}"
-    )
-    new = (
-        "        {%- if loop.index0 > ns.last_query_index %}\n"
-        "            {{- '<|im_start|>' + message.role + '\\n<think>\\n' + reasoning_content + '\\n</think>\\n\\n' }}\n"
-        "        {%- else %}\n"
-        "            {{- '<|im_start|>' + message.role + '\\n' }}\n"
-        "        {%- endif %}\n"
-        "        {% generation %}{{- content }}"
-    )
-    tokenizer.chat_template = tokenizer.chat_template.replace(old, new)
-
-    # Close the generation region at end of assistant turn.
-    # Anchored to the succeeding elif to avoid matching the 12-space-indented
-    # im_end lines inside the tool-role block (8 spaces is a substring of 12).
-    tokenizer.chat_template = tokenizer.chat_template.replace(
-        "        {{- '<|im_end|>\\n' }}\n    {%- elif message.role == \"tool\" %}",
-        "        {{- '<|im_end|>\\n' }}{% endgeneration %}\n    {%- elif message.role == \"tool\" %}",
-    )
-
 
 
 def _load_model(model_name: str, use_qlora: bool = False):
@@ -126,7 +78,7 @@ def _load_model(model_name: str, use_qlora: bool = False):
         model.generation_config.top_p = None
         model.generation_config.top_k = None
 
-    _patch_qwen3_chat_template_for_trl(tokenizer)
+    patch_chat_template_for_trl(tokenizer, model_name)
     return model, tokenizer
 
 
@@ -159,10 +111,7 @@ class LoRATrainer:
         lora_config = LoraConfig(
             r=cfg.rank,
             lora_alpha=cfg.alpha,
-            target_modules=[
-                "q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj",
-            ],
+            target_modules=find_lora_targets(model),
             layers_to_transform=layers_to_transform,
             lora_dropout=0.1,
             bias="none",
