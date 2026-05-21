@@ -57,11 +57,6 @@ os.environ.setdefault("PYTHONUTF8", "1")
 
 from groundcortex.buffer.db import Database
 from groundcortex.config import GroundCortexConfig
-from groundcortex.inference.manager import create_manager
-from groundcortex.inference_server import app as inference_app
-from groundcortex.inference_server import init as init_inference
-from groundcortex.mcp_server import build_mcp_server
-from groundcortex.scheduler import start_scheduler
 
 logging.basicConfig(
     level=logging.INFO,
@@ -312,6 +307,12 @@ def _cli_status(config) -> None:
 
 
 async def main() -> None:
+    from groundcortex.inference.manager import create_manager
+    from groundcortex.inference_server import app as inference_app
+    from groundcortex.inference_server import init as init_inference
+    from groundcortex.mcp_server import build_mcp_server
+    from groundcortex.scheduler import start_scheduler
+
     config = GroundCortexConfig()
     db = Database(config.buffer_db)
     db.backfill_model_name(config.model_name)
