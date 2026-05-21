@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -94,13 +95,14 @@ async def run_consolidation(
             prev_version = active_run.version
         inference_manager.offload()
 
+    loop = asyncio.get_running_loop()
     try:
-        adapter_path = trainer.train(dataset, version)
+        adapter_path = await loop.run_in_executor(None, trainer.train, dataset, version)
     except Exception as exc:
         db.update_training_run(run.id, status="failed")
         logger.exception("Training failed: %s", exc)
         if inference_manager is not None and config.offload_during_training:
-            inference_manager.load_base()
+            await loop.run_in_executor(None, inference_manager.load_base)
             if prev_adapter_path and prev_version:
                 try:
                     inference_manager.load_adapter(prev_adapter_path, prev_version)
@@ -117,13 +119,14 @@ async def run_consolidation(
 
     # 6. Reload base model (if it was offloaded) - needed for both evaluation and inference
     if inference_manager is not None and config.offload_during_training:
-        inference_manager.load_base()
+        await loop.run_in_executor(None, inference_manager.load_base)
 
     # 7. Quality gate (evaluation)
     eval_metrics: dict | None = None
     if inference_manager is not None and config.eval_enabled:
         from groundcortex.evaluation.evaluator import evaluate_adapter
-        eval_result = evaluate_adapter(
+        eval_result = await loop.run_in_executor(
+            None, evaluate_adapter,
             adapter_path, version, run.experience_ids,
             db, inference_manager, config,
         )

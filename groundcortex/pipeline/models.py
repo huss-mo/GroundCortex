@@ -40,7 +40,7 @@ class TrainingExample(BaseModel):
 class TrainingRun(BaseModel):
     id: str = Field(default_factory=_uuid)
     version: str                                  # "v1", "v2", ...
-    trigger: Literal["mcp", "cron", "manual"]
+    trigger: Literal["mcp", "cron", "manual", "cli"]
     adapter_path: str
     experience_ids: list[str] = Field(default_factory=list)
     hyperparams: dict = Field(default_factory=dict)

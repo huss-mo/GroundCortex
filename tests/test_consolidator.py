@@ -112,6 +112,14 @@ class TestRunConsolidation:
             _run(run_consolidation("cron", db, config))
         assert db.list_runs()[0].trigger == "cron"
 
+    def test_cli_trigger_recorded(self, db, config, tmp_path):
+        from groundcortex.consolidator import run_consolidation
+        _add_pending(db)
+        patch_ctx, _ = _patch_trainer(str(tmp_path / "adapters" / "v1"))
+        with patch_ctx:
+            _run(run_consolidation("cli", db, config))
+        assert db.list_runs()[0].trigger == "cli"
+
     def test_complete_result_has_expected_keys(self, db, config, tmp_path):
         from groundcortex.consolidator import run_consolidation
         _add_pending(db)
