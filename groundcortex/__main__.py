@@ -282,7 +282,7 @@ def _cli_list(config) -> None:
     for i, run in enumerate(runs):
         idx = i - n
         active_flag = "yes" if run.is_active else ""
-        compat = "ok" if run.model_name == config.model_name else "!"
+        compat = "yes" if run.model_name == config.model_name else ""
         model = run.model_name[:35]
         print(f"{idx:>6}  {run.version:<10}  {run.status:<10}  {compat:<6}  {active_flag:<6}  {model:<35}  {run.created_at}")
 
