@@ -529,3 +529,21 @@ class TestThinking:
             json={"messages": [{"role": "user", "content": "Hi"}]},
         )
         assert mgr.generate.call_args.kwargs["enable_thinking"] is False
+
+    def test_direct_enable_thinking_field_works(self):
+        mgr = _setup_thinking_test()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}],
+                  "enable_thinking": True},
+        )
+        assert mgr.generate.call_args.kwargs["enable_thinking"] is True
+
+    def test_direct_enable_thinking_takes_effect_without_reasoning_effort(self):
+        mgr = _setup_thinking_test()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}],
+                  "enable_thinking": True, "reasoning_effort": None},
+        )
+        assert mgr.generate.call_args.kwargs["enable_thinking"] is True

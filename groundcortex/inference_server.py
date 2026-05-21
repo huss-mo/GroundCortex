@@ -8,7 +8,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from groundcortex.buffer.db import Database
 from groundcortex.config import GroundCortexConfig
@@ -62,10 +62,13 @@ class ChatCompletionRequest(BaseModel):
     tools: list[dict] | None = None
     tool_choice: str | None = None
     reasoning_effort: str | None = None  # "none" | "low" | "medium" | "high"
+    enable_thinking: bool = False        # direct override; also set by reasoning_effort
 
-    @property
-    def enable_thinking(self) -> bool:
-        return self.reasoning_effort is not None and self.reasoning_effort != "none"
+    @model_validator(mode="after")
+    def _resolve_thinking(self) -> "ChatCompletionRequest":
+        if not self.enable_thinking and self.reasoning_effort not in (None, "none"):
+            self.enable_thinking = True
+        return self
 
 
 # ──────────────────────────────────────────────────────────────────────────────

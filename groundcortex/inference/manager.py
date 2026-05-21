@@ -131,7 +131,10 @@ class InferenceManager:
             outputs = model.generate(**inputs, **gen_kwargs)
 
         new_tokens = outputs[0][inputs["input_ids"].shape[1]:]
-        return tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        result = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        if enable_thinking and not result.startswith("<think>"):
+            result = "<think>\n" + result
+        return result
 
     def generate(
         self,
