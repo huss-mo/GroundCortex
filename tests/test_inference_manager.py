@@ -137,3 +137,42 @@ class TestGenerateBase:
 
         manager.generate_base([{"role": "user", "content": "hi"}])
         manager._base_model.generate.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# enable_thinking override
+# ---------------------------------------------------------------------------
+
+class TestEnableThinking:
+    def _make_manager(self, model_name: str) -> InferenceManager:
+        cfg = MagicMock()
+        cfg.model_name = model_name
+        m = InferenceManager(cfg)
+        _attach_mock_model(m)
+        return m
+
+    def _captured_template_kwargs(self, manager: InferenceManager, enable_thinking: bool) -> dict:
+        manager.generate([{"role": "user", "content": "hi"}], enable_thinking=enable_thinking)
+        call_kwargs = manager._tokenizer.apply_chat_template.call_args.kwargs
+        return call_kwargs
+
+    def test_enable_thinking_true_passed_for_qwen3(self):
+        m = self._make_manager("Qwen/Qwen3.5-2B")
+        kwargs = self._captured_template_kwargs(m, enable_thinking=True)
+        assert kwargs["enable_thinking"] is True
+
+    def test_enable_thinking_false_passed_for_qwen3(self):
+        m = self._make_manager("Qwen/Qwen3.5-2B")
+        kwargs = self._captured_template_kwargs(m, enable_thinking=False)
+        assert kwargs["enable_thinking"] is False
+
+    def test_generate_base_always_uses_thinking_false_for_qwen3(self):
+        m = self._make_manager("Qwen/Qwen3.5-2B")
+        m.generate_base([{"role": "user", "content": "hi"}])
+        kwargs = m._tokenizer.apply_chat_template.call_args.kwargs
+        assert kwargs["enable_thinking"] is False
+
+    def test_enable_thinking_not_injected_for_unknown_model(self):
+        m = self._make_manager("meta-llama/Llama-3-8B")
+        kwargs = self._captured_template_kwargs(m, enable_thinking=True)
+        assert "enable_thinking" not in kwargs

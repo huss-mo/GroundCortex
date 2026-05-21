@@ -480,3 +480,52 @@ class TestToolCalling:
         tool_msg = next(m for m in messages if m["role"] == "tool")
         assert tool_msg["tool_call_id"] == "call_abc"
         assert tool_msg["content"] == "12:00"
+
+
+# ---------------------------------------------------------------------------
+# Thinking / reasoning_effort
+# ---------------------------------------------------------------------------
+
+def _setup_thinking_test(response="Answer."):
+    mgr = _manager(response=response)
+    server_mod._inference_manager = mgr
+    server_mod._config = _config_with_key()
+    return mgr
+
+
+class TestThinking:
+    def test_reasoning_effort_medium_passes_enable_thinking_true(self):
+        mgr = _setup_thinking_test()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}],
+                  "reasoning_effort": "medium"},
+        )
+        call_kwargs = mgr.generate.call_args.kwargs
+        assert call_kwargs["enable_thinking"] is True
+
+    def test_reasoning_effort_high_passes_enable_thinking_true(self):
+        mgr = _setup_thinking_test()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}],
+                  "reasoning_effort": "high"},
+        )
+        assert mgr.generate.call_args.kwargs["enable_thinking"] is True
+
+    def test_reasoning_effort_none_passes_enable_thinking_false(self):
+        mgr = _setup_thinking_test()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}],
+                  "reasoning_effort": "none"},
+        )
+        assert mgr.generate.call_args.kwargs["enable_thinking"] is False
+
+    def test_no_reasoning_effort_passes_enable_thinking_false(self):
+        mgr = _setup_thinking_test()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}]},
+        )
+        assert mgr.generate.call_args.kwargs["enable_thinking"] is False
