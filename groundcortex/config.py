@@ -88,11 +88,6 @@ class GroundCortexConfig(BaseSettings):
     inference_forwarded_allow_ips: str = "127.0.0.1"
     inference_allowed_hosts: str = ""
 
-    # Always enable thinking (enable_thinking=True) for all inference requests,
-    # regardless of what the client sends. Useful when the upstream proxy
-    # (e.g. LiteLLM) strips reasoning_effort before forwarding to this server.
-    enable_thinking: bool = False
-
     # Request logging
     log_requests: bool = False
 

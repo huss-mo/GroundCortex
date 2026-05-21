@@ -119,11 +119,6 @@ async def chat_completions(request: ChatCompletionRequest):
     created = int(time.time())
     active = _inference_manager.get_active_version() or "base"
 
-    # Server-level override: if GROUNDCORTEX_ENABLE_THINKING=true, thinking is
-    # always on regardless of what the client (or an upstream proxy) sends.
-    if _config and _config.enable_thinking:
-        request.enable_thinking = True
-
     if _request_logger:
         from groundcortex.request_logger import log_event
         req_data = request.model_dump(exclude_none=False)

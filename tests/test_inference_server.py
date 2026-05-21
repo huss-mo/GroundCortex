@@ -36,11 +36,10 @@ def _manager(adapters=None, active=None, ready=True, training=False, response="T
     return m
 
 
-def _config_with_key(api_key="", model_name="test-model", enable_thinking=False):
+def _config_with_key(api_key="", model_name="test-model"):
     cfg = MagicMock()
     cfg.inference_api_key = api_key
     cfg.model_name = model_name
-    cfg.enable_thinking = enable_thinking  # must be explicit bool, not MagicMock
     return cfg
 
 
