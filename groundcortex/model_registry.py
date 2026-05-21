@@ -5,6 +5,7 @@ Centralises per-model-family customisations that can't be auto-detected:
   - find_lora_targets(model)           auto-discover LoRA target module names
   - patch_chat_template_for_trl()      add {% generation %} markers TRL requires
   - get_apply_chat_template_kwargs()   extra kwargs for tokenizer.apply_chat_template
+  - parse_tool_calls(response, model)  parse model-native tool call output
 
 For most standard models (Llama 3, Mistral, Phi-3, Qwen2.5, etc.) TRL's own
 auto-patcher handles the chat template during SFTTrainer init, so no registry
@@ -16,8 +17,15 @@ Adding support for a new model family:
   2. Register it in _REGISTRY under a lowercase key that appears in the model name.
   3. If the model needs extra apply_chat_template kwargs (e.g. enable_thinking),
      add them under "apply_chat_template_kwargs".
+  4. If the model emits tool calls in a non-standard format, write a
+     _parse_<family>_tool_calls(response) function and wire it into
+     parse_tool_calls(). The function must normalize to OpenAI format:
+     {"id": "call_<hex>", "type": "function", "function": {"name": ..., "arguments": <json_str>}}
 """
 
+import json
+import re
+import uuid
 from collections import Counter
 
 import torch
@@ -196,6 +204,113 @@ def patch_chat_template_for_trl(tokenizer, model_name: str) -> None:
     family = _get_family(model_name)
     if family and _REGISTRY[family].get("chat_template_patch"):
         _REGISTRY[family]["chat_template_patch"](tokenizer)
+
+
+def _parse_gemma_tool_calls(response: str) -> list[dict] | None:
+    """Parse Gemma 4 tool call output into OpenAI tool_calls format.
+
+    Gemma 4 emits JSON tool calls using "parameters" instead of "arguments":
+      <tool_call>{"name": "x", "parameters": {...}}</tool_call>
+    The key is normalized to "arguments" to match the OpenAI spec.
+    """
+    calls = []
+    for raw in re.findall(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", response, re.DOTALL):
+        try:
+            data = json.loads(raw)
+            calls.append({
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {
+                    "name": data["name"],
+                    "arguments": json.dumps(data.get("parameters", data.get("arguments", {}))),
+                },
+            })
+        except (json.JSONDecodeError, KeyError):
+            return None
+    return calls or None
+
+
+def _parse_qwen_tool_calls(response: str) -> list[dict] | None:
+    calls = []
+
+    # JSON format: <tool_call>{"name": "x", "arguments": {...}}</tool_call>
+    for raw in re.findall(r"<tool_call>\s*(\{.*?\})\s*</tool_call>", response, re.DOTALL):
+        try:
+            data = json.loads(raw)
+            calls.append({
+                "id": f"call_{uuid.uuid4().hex[:8]}",
+                "type": "function",
+                "function": {
+                    "name": data["name"],
+                    "arguments": json.dumps(data.get("arguments", {})),
+                },
+            })
+        except (json.JSONDecodeError, KeyError):
+            return None
+
+    if calls:
+        return calls
+
+    # Function-tag format: <function=name>args_json_or_empty</function>
+    # Appears inside or outside <tool_call> blocks depending on model version.
+    for name, args_raw in re.findall(
+        r"<function=([^>]+)>(.*?)</function>", response, re.DOTALL
+    ):
+        args_raw = args_raw.strip()
+        try:
+            arguments = json.loads(args_raw) if args_raw else {}
+        except json.JSONDecodeError:
+            arguments = {}
+        calls.append({
+            "id": f"call_{uuid.uuid4().hex[:8]}",
+            "type": "function",
+            "function": {
+                "name": name.strip(),
+                "arguments": json.dumps(arguments),
+            },
+        })
+
+    return calls or None
+
+
+def parse_tool_calls(response: str, model_name: str) -> list[dict] | None:
+    """Parse model-native tool call output into OpenAI tool_calls format.
+
+    Returns None if no tool calls are found or the model family is not supported.
+    """
+    family = _get_family(model_name)
+    if family == "qwen":
+        return _parse_qwen_tool_calls(response)
+    if family == "gemma":
+        return _parse_gemma_tool_calls(response)
+    return None
+
+
+def normalize_messages_for_template(messages: list[dict]) -> list[dict]:
+    """Deserialize tool_calls arguments from JSON strings to dicts.
+
+    OpenAI spec stores function arguments as a JSON-encoded string; model chat
+    templates expect them as a parsed dict and call .items() on the value.
+    Call this before apply_chat_template whenever messages may contain
+    assistant tool_calls returned from a prior turn.
+    """
+    result = []
+    for msg in messages:
+        tool_calls = msg.get("tool_calls")
+        if tool_calls:
+            msg = dict(msg)
+            normalized = []
+            for tc in tool_calls:
+                args = tc["function"]["arguments"]
+                if isinstance(args, str):
+                    try:
+                        args = json.loads(args)
+                    except json.JSONDecodeError:
+                        pass
+                normalized.append({**tc, "function": {**tc["function"], "arguments": args}})
+            msg["tool_calls"] = normalized
+        result.append(msg)
+    return result
 
 
 def get_apply_chat_template_kwargs(model_name: str) -> dict:

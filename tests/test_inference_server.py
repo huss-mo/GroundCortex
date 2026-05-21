@@ -387,3 +387,96 @@ class TestControlSwitch:
         self._setup(runs=runs, adapters=["v1"])
         body = TestClient(app).post("/v1/control/switch", json={"version": "v1"}).json()
         assert body["status"] == "ok"
+
+
+# ---------------------------------------------------------------------------
+# Tool calling
+# ---------------------------------------------------------------------------
+
+_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_time",
+        "description": "Get current time",
+        "parameters": {"type": "object", "properties": {}},
+    },
+}
+
+_TOOL_CALL_RESPONSE = '<tool_call>\n{"name": "get_time", "arguments": {}}\n</tool_call>'
+
+
+def _setup_tool_test(response: str = _TOOL_CALL_RESPONSE):
+    mgr = _manager(response=response)
+    server_mod._inference_manager = mgr
+    cfg = _config_with_key(api_key="", model_name="mlx-community/Qwen3.6-35B-A3B-4bit")
+    server_mod._config = cfg
+    return mgr
+
+
+class TestToolCalling:
+    def test_tool_call_returned_when_model_outputs_tool_call(self):
+        _setup_tool_test()
+        r = TestClient(app).post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "What time is it?"}],
+                "tools": [_TOOL],
+            },
+        )
+        assert r.status_code == 200
+        choice = r.json()["choices"][0]
+        assert choice["finish_reason"] == "tool_calls"
+        assert choice["message"]["content"] is None
+        tool_calls = choice["message"]["tool_calls"]
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"]["name"] == "get_time"
+
+    def test_plain_response_when_no_tool_call(self):
+        _setup_tool_test(response="It is noon.")
+        r = TestClient(app).post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "What time is it?"}],
+                "tools": [_TOOL],
+            },
+        )
+        assert r.status_code == 200
+        choice = r.json()["choices"][0]
+        assert choice["finish_reason"] == "stop"
+        assert choice["message"]["content"] == "It is noon."
+        assert "tool_calls" not in choice["message"]
+
+    def test_tools_not_passed_skips_parsing(self):
+        # Even if the model happens to output a tool_call block, without
+        # request.tools set the server must not parse it.
+        _setup_tool_test(response=_TOOL_CALL_RESPONSE)
+        r = TestClient(app).post(
+            "/v1/chat/completions",
+            json={"messages": [{"role": "user", "content": "Hi"}]},
+        )
+        assert r.status_code == 200
+        choice = r.json()["choices"][0]
+        assert choice["finish_reason"] == "stop"
+        assert choice["message"]["content"] == _TOOL_CALL_RESPONSE
+
+    def test_tool_message_forwarded_in_messages(self):
+        mgr = _manager(response="done")
+        server_mod._inference_manager = mgr
+        server_mod._config = _config_with_key()
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={
+                "messages": [
+                    {"role": "user", "content": "What time?"},
+                    {"role": "assistant", "content": None,
+                     "tool_calls": [{"id": "call_abc", "type": "function",
+                                     "function": {"name": "get_time", "arguments": "{}"}}]},
+                    {"role": "tool", "tool_call_id": "call_abc", "content": "12:00"},
+                ],
+            },
+        )
+        call_args = mgr.generate.call_args
+        messages = call_args.kwargs.get("messages") or call_args.args[0]
+        tool_msg = next(m for m in messages if m["role"] == "tool")
+        assert tool_msg["tool_call_id"] == "call_abc"
+        assert tool_msg["content"] == "12:00"

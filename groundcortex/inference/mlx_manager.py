@@ -8,7 +8,7 @@ from __future__ import annotations
 import logging
 
 from groundcortex.config import GroundCortexConfig
-from groundcortex.model_registry import get_apply_chat_template_kwargs
+from groundcortex.model_registry import get_apply_chat_template_kwargs, normalize_messages_for_template
 
 logger = logging.getLogger(__name__)
 
@@ -107,6 +107,7 @@ class MLXInferenceManager:
         max_new_tokens: int = 512,
         temperature: float | None = None,
         stream: bool = False,
+        tools: list[dict] | None = None,
     ) -> str:
         """Generate a response for the given chat messages."""
         import mlx_lm
@@ -114,9 +115,13 @@ class MLXInferenceManager:
         if self._model is None:
             raise RuntimeError("Call load_base() before generate().")
 
+        template_kwargs = get_apply_chat_template_kwargs(self._config.model_name)
+        if tools:
+            template_kwargs["tools"] = tools
         prompt = self._tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True,
-            **get_apply_chat_template_kwargs(self._config.model_name),
+            normalize_messages_for_template(messages),
+            tokenize=False, add_generation_prompt=True,
+            **template_kwargs,
         )
         from mlx_lm.sample_utils import make_sampler
 

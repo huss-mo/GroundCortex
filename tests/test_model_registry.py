@@ -6,9 +6,13 @@ from unittest.mock import MagicMock
 import torch
 import torch.nn as nn
 
+import json
+
 from groundcortex.model_registry import (
     find_lora_targets,
     get_apply_chat_template_kwargs,
+    normalize_messages_for_template,
+    parse_tool_calls,
     patch_chat_template_for_trl,
 )
 
@@ -207,6 +211,51 @@ class TestFindLoraTargetsValidation:
 # ──────────────────────────────────────────────────────────────────────────────
 # get_apply_chat_template_kwargs
 # ──────────────────────────────────────────────────────────────────────────────
+# normalize_messages_for_template
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestNormalizeMessagesForTemplate:
+    def _assistant_msg(self, name: str, args) -> dict:
+        return {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "call_abc", "type": "function",
+                            "function": {"name": name, "arguments": args}}],
+        }
+
+    def test_json_string_arguments_deserialized(self):
+        msg = self._assistant_msg("get_time", '{"tz": "UTC"}')
+        result = normalize_messages_for_template([msg])
+        args = result[0]["tool_calls"][0]["function"]["arguments"]
+        assert isinstance(args, dict)
+        assert args == {"tz": "UTC"}
+
+    def test_dict_arguments_unchanged(self):
+        msg = self._assistant_msg("get_time", {"tz": "UTC"})
+        result = normalize_messages_for_template([msg])
+        args = result[0]["tool_calls"][0]["function"]["arguments"]
+        assert args == {"tz": "UTC"}
+
+    def test_messages_without_tool_calls_unchanged(self):
+        msgs = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi"},
+        ]
+        assert normalize_messages_for_template(msgs) == msgs
+
+    def test_tool_message_not_modified(self):
+        msg = {"role": "tool", "tool_call_id": "call_abc", "content": "12:00"}
+        result = normalize_messages_for_template([msg])
+        assert result[0] == msg
+
+    def test_original_message_not_mutated(self):
+        msg = self._assistant_msg("get_time", '{"tz": "UTC"}')
+        original_args = msg["tool_calls"][0]["function"]["arguments"]
+        normalize_messages_for_template([msg])
+        assert msg["tool_calls"][0]["function"]["arguments"] == original_args
+
+
+# ──────────────────────────────────────────────────────────────────────────────
 
 class TestGetApplyChatTemplateKwargs:
     def test_qwen_returns_enable_thinking_false(self):
@@ -282,3 +331,111 @@ class TestPatchChatTemplateForTrl:
         patch_chat_template_for_trl(tokenizer, "google/gemma-4-E4B-it")
         assert tokenizer.chat_template == template
         assert "WARNING" in capsys.readouterr().out
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# parse_tool_calls
+# ──────────────────────────────────────────────────────────────────────────────
+
+class TestParseToolCalls:
+    QWEN = "mlx-community/Qwen3.6-35B-A3B-4bit"
+
+    def _wrap(self, name: str, arguments: dict | None = None) -> str:
+        payload = {"name": name, "arguments": arguments or {}}
+        return f"<tool_call>\n{json.dumps(payload)}\n</tool_call>"
+
+    def test_single_tool_call_parsed(self):
+        result = parse_tool_calls(self._wrap("get_time"), self.QWEN)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_time"
+        assert result[0]["type"] == "function"
+
+    def test_multiple_tool_calls_parsed(self):
+        response = self._wrap("get_time") + "\n" + self._wrap("get_date")
+        result = parse_tool_calls(response, self.QWEN)
+        assert result is not None
+        assert len(result) == 2
+        assert result[0]["function"]["name"] == "get_time"
+        assert result[1]["function"]["name"] == "get_date"
+
+    def test_no_tool_call_returns_none(self):
+        assert parse_tool_calls("Hello, how can I help you?", self.QWEN) is None
+
+    def test_malformed_json_returns_none(self):
+        assert parse_tool_calls("<tool_call>not valid json</tool_call>", self.QWEN) is None
+
+    def test_arguments_serialised_as_json_string(self):
+        result = parse_tool_calls(self._wrap("search", {"query": "weather"}), self.QWEN)
+        assert result is not None
+        args = result[0]["function"]["arguments"]
+        assert isinstance(args, str)
+        assert json.loads(args) == {"query": "weather"}
+
+    def test_unknown_model_returns_none(self):
+        assert parse_tool_calls(self._wrap("get_time"), "meta-llama/Llama-3.2-3B-Instruct") is None
+
+    def test_call_id_is_unique(self):
+        response = self._wrap("get_time") + "\n" + self._wrap("get_date")
+        result = parse_tool_calls(response, self.QWEN)
+        assert result is not None
+        assert result[0]["id"] != result[1]["id"]
+
+    def test_call_id_has_call_prefix(self):
+        result = parse_tool_calls(self._wrap("get_time"), self.QWEN)
+        assert result[0]["id"].startswith("call_")
+
+    def test_empty_arguments_produces_empty_json_object(self):
+        result = parse_tool_calls(self._wrap("ping", {}), self.QWEN)
+        assert json.loads(result[0]["function"]["arguments"]) == {}
+
+    def test_function_tag_format_parsed(self):
+        response = "<tool_call>\n<function=get_time>\n</function>\n</tool_call>"
+        result = parse_tool_calls(response, self.QWEN)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_time"
+        assert json.loads(result[0]["function"]["arguments"]) == {}
+
+    def test_function_tag_format_with_arguments(self):
+        response = '<tool_call>\n<function=search>{"query": "weather"}</function>\n</tool_call>'
+        result = parse_tool_calls(response, self.QWEN)
+        assert result is not None
+        assert result[0]["function"]["name"] == "search"
+        assert json.loads(result[0]["function"]["arguments"]) == {"query": "weather"}
+
+
+class TestParseToolCallsGemma:
+    GEMMA = "google/gemma-4-E4B-it"
+
+    def _wrap(self, name: str, parameters: dict | None = None) -> str:
+        payload = {"name": name, "parameters": parameters or {}}
+        return f"<tool_call>\n{json.dumps(payload)}\n</tool_call>"
+
+    def test_single_tool_call_parsed(self):
+        result = parse_tool_calls(self._wrap("get_time"), self.GEMMA)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "get_time"
+        assert result[0]["type"] == "function"
+
+    def test_parameters_normalized_to_arguments(self):
+        result = parse_tool_calls(self._wrap("search", {"query": "weather"}), self.GEMMA)
+        assert result is not None
+        args = result[0]["function"]["arguments"]
+        assert isinstance(args, str)
+        assert json.loads(args) == {"query": "weather"}
+
+    def test_empty_parameters_produces_empty_json_object(self):
+        result = parse_tool_calls(self._wrap("ping", {}), self.GEMMA)
+        assert json.loads(result[0]["function"]["arguments"]) == {}
+
+    def test_no_tool_call_returns_none(self):
+        assert parse_tool_calls("Hello, how can I help you?", self.GEMMA) is None
+
+    def test_malformed_json_returns_none(self):
+        assert parse_tool_calls("<tool_call>not valid json</tool_call>", self.GEMMA) is None
+
+    def test_call_id_has_call_prefix(self):
+        result = parse_tool_calls(self._wrap("get_time"), self.GEMMA)
+        assert result[0]["id"].startswith("call_")

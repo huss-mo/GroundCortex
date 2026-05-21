@@ -668,6 +668,62 @@ Returns a standard OpenAI chat completion object with `id`, `object`, `choices`,
 | 404 | `model` field specifies a version ID that is not loaded |
 | 401 | API key configured but token missing or incorrect |
 
+### Tool Calling
+
+The endpoint supports OpenAI-compatible tool calling. Pass a `tools` array in the request and the
+model will emit structured tool calls when appropriate. The response format follows the OpenAI
+spec: `finish_reason` is `"tool_calls"`, `message.content` is `null`, and `message.tool_calls`
+contains the calls.
+
+```bash
+curl http://127.0.0.1:4344/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your-key" \
+  -d '{
+    "model": "active",
+    "messages": [{"role": "user", "content": "What time is it?"}],
+    "tools": [{
+      "type": "function",
+      "function": {
+        "name": "get_time",
+        "description": "Returns the current time",
+        "parameters": {"type": "object", "properties": {}}
+      }
+    }],
+    "max_tokens": 256
+  }'
+```
+
+Response when a tool is called:
+
+```json
+{
+  "choices": [{
+    "finish_reason": "tool_calls",
+    "message": {
+      "role": "assistant",
+      "content": null,
+      "tool_calls": [{
+        "id": "call_a1b2c3d4",
+        "type": "function",
+        "function": {"name": "get_time", "arguments": "{}"}
+      }]
+    }
+  }]
+}
+```
+
+**Multi-turn tool conversations** work by sending back a `role: "tool"` message with the result:
+
+```json
+{"role": "tool", "tool_call_id": "call_a1b2c3d4", "content": "14:32 UTC"}
+```
+
+**Model support:** Tool calling is supported for Qwen3 family models (including the default
+`mlx-community/Qwen3.6-35B-A3B-4bit`). Other model families receive tool schemas via
+`apply_chat_template` but their output is returned as plain text — the `tool_calls` field will
+not be populated.
+
 ### Switching Adapters
 
 Requesting a specific version ID in `POST /v1/chat/completions` activates that adapter for all subsequent requests - it is a persistent switch, not per-request routing.

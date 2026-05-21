@@ -46,7 +46,9 @@ async def bearer_auth(request: Request, call_next):
 
 class ChatMessage(BaseModel):
     role: str
-    content: str
+    content: str | None = None
+    tool_calls: list[dict] | None = None
+    tool_call_id: str | None = None
 
 
 class ChatCompletionRequest(BaseModel):
@@ -55,6 +57,8 @@ class ChatCompletionRequest(BaseModel):
     max_tokens: int = 512
     temperature: float | None = None
     stream: bool = False
+    tools: list[dict] | None = None
+    tool_choice: str | None = None
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -93,18 +97,29 @@ async def chat_completions(request: ChatCompletionRequest):
             raise HTTPException(404, f"Adapter '{request.model}' not loaded.")
         _inference_manager.set_active(request.model)
 
-    messages = [{"role": m.role, "content": m.content} for m in request.messages]
+    messages = [m.model_dump(exclude_none=True) for m in request.messages]
 
     response_text = _inference_manager.generate(
         messages=messages,
         max_new_tokens=request.max_tokens,
         temperature=request.temperature,
         stream=request.stream,
+        tools=request.tools,
     )
 
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
     active = _inference_manager.get_active_version() or "base"
+
+    from groundcortex.model_registry import parse_tool_calls
+    tool_calls = parse_tool_calls(response_text, _config.model_name) if request.tools else None
+
+    if tool_calls:
+        message_dict = {"role": "assistant", "content": None, "tool_calls": tool_calls}
+        finish_reason = "tool_calls"
+    else:
+        message_dict = {"role": "assistant", "content": response_text}
+        finish_reason = "stop"
 
     if request.stream:
         # Minimal SSE streaming: send the full response as a single chunk
@@ -116,8 +131,8 @@ async def chat_completions(request: ChatCompletionRequest):
                 "model": active,
                 "choices": [{
                     "index": 0,
-                    "delta": {"role": "assistant", "content": response_text},
-                    "finish_reason": "stop",
+                    "delta": message_dict,
+                    "finish_reason": finish_reason,
                 }],
             }
             import json
@@ -133,8 +148,8 @@ async def chat_completions(request: ChatCompletionRequest):
         "model": active,
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": response_text},
-            "finish_reason": "stop",
+            "message": message_dict,
+            "finish_reason": finish_reason,
         }],
         "usage": {"prompt_tokens": -1, "completion_tokens": -1, "total_tokens": -1},
     }

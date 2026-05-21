@@ -7,7 +7,7 @@ from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 from groundcortex.config import GroundCortexConfig
-from groundcortex.model_registry import get_apply_chat_template_kwargs
+from groundcortex.model_registry import get_apply_chat_template_kwargs, normalize_messages_for_template
 from groundcortex.training.trainer import _get_device
 
 logger = logging.getLogger(__name__)
@@ -103,11 +103,16 @@ class InferenceManager:
         messages: list[dict],
         max_new_tokens: int = 512,
         temperature: float | None = None,
+        tools: list[dict] | None = None,
     ) -> str:
         tokenizer = self._tokenizer
+        template_kwargs = get_apply_chat_template_kwargs(self._config.model_name)
+        if tools:
+            template_kwargs["tools"] = tools
         text = tokenizer.apply_chat_template(
-            messages, tokenize=False, add_generation_prompt=True,
-            **get_apply_chat_template_kwargs(self._config.model_name),
+            normalize_messages_for_template(messages),
+            tokenize=False, add_generation_prompt=True,
+            **template_kwargs,
         )
         inputs = tokenizer(text, return_tensors="pt").to(self._device)
 
@@ -131,6 +136,7 @@ class InferenceManager:
         max_new_tokens: int = 512,
         temperature: float | None = None,
         stream: bool = False,
+        tools: list[dict] | None = None,
     ) -> str:
         """Generate a response for the given chat messages.
 
@@ -141,7 +147,7 @@ class InferenceManager:
         model = self._model if self._model is not None else self._base_model
         if model is None:
             raise RuntimeError("Call load_base() before generate().")
-        return self._run_generate(model, messages, max_new_tokens, temperature)
+        return self._run_generate(model, messages, max_new_tokens, temperature, tools=tools)
 
     def generate_base(
         self,
