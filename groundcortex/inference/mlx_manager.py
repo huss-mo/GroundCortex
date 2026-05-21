@@ -135,10 +135,15 @@ class MLXInferenceManager:
             raise RuntimeError("Call load_base() before generate().")
 
         prompt = self._build_prompt(messages, tools, enable_thinking)
-        return mlx_lm.generate(
+        result = mlx_lm.generate(
             self._model, self._tokenizer, prompt=prompt,
             **self._sampler_kwargs(max_new_tokens, temperature),
         )
+        # mlx_lm strips <think> (a special token) but keeps </think>.
+        # Restore the opening tag so clients receive a well-formed block.
+        if enable_thinking and not result.startswith("<think>"):
+            result = "<think>\n" + result
+        return result
 
     def generate_stream(
         self,
@@ -155,10 +160,14 @@ class MLXInferenceManager:
             raise RuntimeError("Call load_base() before generate_stream().")
 
         prompt = self._build_prompt(messages, tools, enable_thinking)
+        first = True
         for response in mlx_lm.stream_generate(
             self._model, self._tokenizer, prompt=prompt,
             **self._sampler_kwargs(max_new_tokens, temperature),
         ):
+            if first and enable_thinking and not response.text.startswith("<think>"):
+                yield "<think>\n"
+            first = False
             yield response.text
 
     def generate_base(
