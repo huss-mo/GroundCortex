@@ -101,34 +101,61 @@ class MLXInferenceManager:
         self._active_version = None
         logger.info("MLX LoRA adapters disabled; running on base model.")
 
+    def _build_prompt(self, messages, tools):
+        template_kwargs = get_apply_chat_template_kwargs(self._config.model_name)
+        if tools:
+            template_kwargs["tools"] = tools
+        return self._tokenizer.apply_chat_template(
+            normalize_messages_for_template(messages),
+            tokenize=False, add_generation_prompt=True,
+            **template_kwargs,
+        )
+
+    def _sampler_kwargs(self, max_new_tokens, temperature):
+        from mlx_lm.sample_utils import make_sampler
+        kwargs = {"max_tokens": max_new_tokens}
+        if temperature is not None and temperature > 0:
+            kwargs["sampler"] = make_sampler(temp=temperature)
+        return kwargs
+
     def generate(
         self,
         messages: list[dict],
         max_new_tokens: int = 512,
         temperature: float | None = None,
-        stream: bool = False,
         tools: list[dict] | None = None,
     ) -> str:
-        """Generate a response for the given chat messages."""
+        """Generate a complete response for the given chat messages."""
         import mlx_lm
 
         if self._model is None:
             raise RuntimeError("Call load_base() before generate().")
 
-        template_kwargs = get_apply_chat_template_kwargs(self._config.model_name)
-        if tools:
-            template_kwargs["tools"] = tools
-        prompt = self._tokenizer.apply_chat_template(
-            normalize_messages_for_template(messages),
-            tokenize=False, add_generation_prompt=True,
-            **template_kwargs,
+        prompt = self._build_prompt(messages, tools)
+        return mlx_lm.generate(
+            self._model, self._tokenizer, prompt=prompt,
+            **self._sampler_kwargs(max_new_tokens, temperature),
         )
-        from mlx_lm.sample_utils import make_sampler
 
-        kwargs = {"max_tokens": max_new_tokens}
-        if temperature is not None and temperature > 0:
-            kwargs["sampler"] = make_sampler(temp=temperature)
-        return mlx_lm.generate(self._model, self._tokenizer, prompt=prompt, **kwargs)
+    def generate_stream(
+        self,
+        messages: list[dict],
+        max_new_tokens: int = 512,
+        temperature: float | None = None,
+        tools: list[dict] | None = None,
+    ):
+        """Yield generated text one chunk at a time using mlx_lm.stream_generate."""
+        import mlx_lm
+
+        if self._model is None:
+            raise RuntimeError("Call load_base() before generate_stream().")
+
+        prompt = self._build_prompt(messages, tools)
+        for response in mlx_lm.stream_generate(
+            self._model, self._tokenizer, prompt=prompt,
+            **self._sampler_kwargs(max_new_tokens, temperature),
+        ):
+            yield response.text
 
     def generate_base(
         self,

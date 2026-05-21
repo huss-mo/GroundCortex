@@ -135,19 +135,58 @@ class InferenceManager:
         messages: list[dict],
         max_new_tokens: int = 512,
         temperature: float | None = None,
-        stream: bool = False,
         tools: list[dict] | None = None,
     ) -> str:
-        """Generate a response for the given chat messages.
+        """Generate a complete response for the given chat messages.
 
-        Uses the base model directly if no adapter is active.
-        Streaming is not yet implemented; the stream flag is accepted for
-        API compatibility but generation is always returned in full.
+        Uses the active LoRA adapter if one is loaded, otherwise the base model.
         """
         model = self._model if self._model is not None else self._base_model
         if model is None:
             raise RuntimeError("Call load_base() before generate().")
         return self._run_generate(model, messages, max_new_tokens, temperature, tools=tools)
+
+    def generate_stream(
+        self,
+        messages: list[dict],
+        max_new_tokens: int = 512,
+        temperature: float | None = None,
+        tools: list[dict] | None = None,
+    ):
+        """Yield generated text one chunk at a time using TextIteratorStreamer."""
+        import threading
+        from transformers import TextIteratorStreamer
+
+        model = self._model if self._model is not None else self._base_model
+        if model is None:
+            raise RuntimeError("Call load_base() before generate_stream().")
+
+        tokenizer = self._tokenizer
+        template_kwargs = get_apply_chat_template_kwargs(self._config.model_name)
+        if tools:
+            template_kwargs["tools"] = tools
+        text = tokenizer.apply_chat_template(
+            normalize_messages_for_template(messages),
+            tokenize=False, add_generation_prompt=True,
+            **template_kwargs,
+        )
+        inputs = tokenizer(text, return_tensors="pt").to(self._device)
+
+        streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
+
+        do_sample = temperature is not None and temperature > 0
+        gen_kwargs = {**inputs, "max_new_tokens": max_new_tokens, "do_sample": do_sample,
+                      "streamer": streamer}
+        if do_sample:
+            gen_kwargs["temperature"] = temperature
+
+        thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
+        thread.start()
+        try:
+            for chunk in streamer:
+                yield chunk
+        finally:
+            thread.join()
 
     def generate_base(
         self,

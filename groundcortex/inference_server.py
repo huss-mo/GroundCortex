@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import asyncio
+import json
 import time
 import uuid
 from typing import AsyncIterator
@@ -98,20 +100,80 @@ async def chat_completions(request: ChatCompletionRequest):
         _inference_manager.set_active(request.model)
 
     messages = [m.model_dump(exclude_none=True) for m in request.messages]
-
-    response_text = _inference_manager.generate(
-        messages=messages,
-        max_new_tokens=request.max_tokens,
-        temperature=request.temperature,
-        stream=request.stream,
-        tools=request.tools,
-    )
-
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
     created = int(time.time())
     active = _inference_manager.get_active_version() or "base"
 
     from groundcortex.model_registry import parse_tool_calls
+
+    def _make_chunk(delta: dict, finish_reason: str | None) -> str:
+        return "data: " + json.dumps({
+            "id": completion_id, "object": "chat.completion.chunk",
+            "created": created, "model": active,
+            "choices": [{"index": 0, "delta": delta, "finish_reason": finish_reason}],
+        }) + "\n\n"
+
+    if request.stream:
+        sync_gen = _inference_manager.generate_stream(
+            messages=messages, max_new_tokens=request.max_tokens,
+            temperature=request.temperature, tools=request.tools,
+        )
+        loop = asyncio.get_running_loop()
+
+        def _next_chunk(gen):
+            try:
+                return next(gen)
+            except StopIteration:
+                return None
+
+        async def _stream_tokens() -> AsyncIterator[str]:
+            accumulated: list[str] = []
+            text_so_far = ""
+            n_sent = 0       # how many accumulated entries have been yielded as content
+            suppressing = False
+
+            yield _make_chunk({"role": "assistant", "content": ""}, None)
+            while True:
+                text = await loop.run_in_executor(None, _next_chunk, sync_gen)
+                if text is None:
+                    break
+                if not text:
+                    continue
+                accumulated.append(text)
+                text_so_far += text
+
+                if not suppressing:
+                    # Suppress once a tool-call marker appears in the stream so
+                    # raw <tool_call> / <function=…> markup never reaches the client.
+                    if request.tools and (
+                        "<tool_call>" in text_so_far or "<function=" in text_so_far
+                    ):
+                        suppressing = True
+                    else:
+                        n_sent += 1
+                        yield _make_chunk({"content": text}, None)
+
+            if request.tools:
+                tool_calls = parse_tool_calls(text_so_far, _config.model_name)
+                if tool_calls:
+                    yield _make_chunk({"tool_calls": tool_calls}, "tool_calls")
+                    yield "data: [DONE]\n\n"
+                    return
+                # False alarm (model mentioned the tag without an actual call):
+                # flush any suppressed tokens so nothing is lost.
+                for chunk in accumulated[n_sent:]:
+                    yield _make_chunk({"content": chunk}, None)
+
+            yield _make_chunk({}, "stop")
+            yield "data: [DONE]\n\n"
+
+        return StreamingResponse(_stream_tokens(), media_type="text/event-stream")
+
+    # ── Non-streaming ────────────────────────────────────────────────────────
+    response_text = _inference_manager.generate(
+        messages=messages, max_new_tokens=request.max_tokens,
+        temperature=request.temperature, tools=request.tools,
+    )
     tool_calls = parse_tool_calls(response_text, _config.model_name) if request.tools else None
 
     if tool_calls:
@@ -121,36 +183,10 @@ async def chat_completions(request: ChatCompletionRequest):
         message_dict = {"role": "assistant", "content": response_text}
         finish_reason = "stop"
 
-    if request.stream:
-        # Minimal SSE streaming: send the full response as a single chunk
-        async def _stream() -> AsyncIterator[str]:
-            chunk = {
-                "id": completion_id,
-                "object": "chat.completion.chunk",
-                "created": created,
-                "model": active,
-                "choices": [{
-                    "index": 0,
-                    "delta": message_dict,
-                    "finish_reason": finish_reason,
-                }],
-            }
-            import json
-            yield f"data: {json.dumps(chunk)}\n\n"
-            yield "data: [DONE]\n\n"
-
-        return StreamingResponse(_stream(), media_type="text/event-stream")
-
     return {
-        "id": completion_id,
-        "object": "chat.completion",
-        "created": created,
-        "model": active,
-        "choices": [{
-            "index": 0,
-            "message": message_dict,
-            "finish_reason": finish_reason,
-        }],
+        "id": completion_id, "object": "chat.completion",
+        "created": created, "model": active,
+        "choices": [{"index": 0, "message": message_dict, "finish_reason": finish_reason}],
         "usage": {"prompt_tokens": -1, "completion_tokens": -1, "total_tokens": -1},
     }
 
