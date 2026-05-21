@@ -534,7 +534,6 @@ Returns the current state of the service.
 |---|---|---|
 | `active_version` | string or null | Version ID of the currently active adapter |
 | `model_name` | string | Currently configured base model |
-| `pending_count` | int | Number of experiences not yet in any LoRA |
 | `loaded_adapters` | list[string] | All adapter versions currently loaded in memory |
 | `last_run` | object or null | Details of the most recent training run |
 
@@ -1052,7 +1051,6 @@ Example output:
 ```
 Base model     : mlx-community/Qwen3.6-35B-A3B-4bit
 Active adapter : v2
-Pending count  : 0
 Total adapters : 2
 Last trained   : v2 at 2026-05-17T09:00:00
 ```

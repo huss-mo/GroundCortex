@@ -129,11 +129,6 @@ class TestGetCortexStatus:
         result = self._call(mcp)
         assert result["active_version"] == "v2"
 
-    def test_returns_pending_count(self, tmp_path):
-        mcp = self._build(tmp_path, pending=3)
-        result = self._call(mcp)
-        assert result["pending_count"] == 3
-
     def test_returns_loaded_adapters(self, tmp_path):
         mcp = self._build(tmp_path, adapters=["v1", "v2"])
         result = self._call(mcp)

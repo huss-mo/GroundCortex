@@ -170,12 +170,10 @@ def _cli_list(config) -> None:
 def _cli_status(config) -> None:
     db = Database(config.buffer_db)
     active = db.get_active_run()
-    pending = db.count_pending()
     # Count only adapters compatible with the current base model
     runs = _complete_runs_asc(db, model_name=config.model_name)
     print(f"Base model     : {config.model_name}")
     print(f"Active adapter : {active.version if active else 'none (base model)'}")
-    print(f"Pending count  : {pending}")
     print(f"Total adapters : {len(runs)}")
     if runs:
         last = runs[-1]

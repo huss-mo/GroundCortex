@@ -44,7 +44,7 @@ def build_mcp_server(
 
     async def _get_status() -> dict:
         """Returns the current service state: active adapter version, last training
-        run outcome, pending experience count, and loaded adapters.
+        run outcome, and loaded adapters.
 
         Use this to check whether a training run is already in progress before
         triggering another, to identify the active adapter version, or to inspect
@@ -54,7 +54,6 @@ def build_mcp_server(
         return {
             "active_version": inference_manager.get_active_version(),
             "model_name": config.model_name,
-            "pending_count": db.count_pending(),
             "loaded_adapters": inference_manager.list_loaded_adapters(),
             "last_run": {
                 "id": active_run.id,
