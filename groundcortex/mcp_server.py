@@ -19,6 +19,7 @@ def build_mcp_server(
     config: GroundCortexConfig,
     db: "Database",
     inference_manager: "InferenceManager",
+    request_logger=None,
 ) -> FastMCP:
     """Construct the FastMCP server with tools gated by GROUNDCORTEX_MCP_EXPOSED_TOOLS."""
 
@@ -195,9 +196,21 @@ def build_mcp_server(
         "switch_adapter": (_switch_adapter, "Activate a trained adapter by version name (e.g. 'v2'), negative index (-1 = latest), or 'base' to unload LoRA."),
     }
 
+    def _wrap_with_logging(name, fn):
+        import functools
+        from groundcortex.request_logger import log_event
+
+        @functools.wraps(fn)
+        async def _logged(*args, **kwargs):
+            log_event(request_logger, "TOOL_CALL", {"tool": name, "args": kwargs})
+            result = await fn(*args, **kwargs)
+            log_event(request_logger, "TOOL_RESULT", {"tool": name, "result": result})
+            return result
+        return _logged
+
     for name, (fn, _description) in _all_tools.items():
         if name in exposed:
-            mcp.tool(name=name)(fn)
+            mcp.tool(name=name)(_wrap_with_logging(name, fn) if request_logger else fn)
             logger.info("MCP tool registered: %s", name)
         else:
             logger.info("MCP tool excluded by config: %s", name)

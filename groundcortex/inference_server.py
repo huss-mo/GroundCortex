@@ -20,13 +20,18 @@ app = FastAPI(title="GroundCortex Inference", version="1.0.0")
 _inference_manager: InferenceManager | None = None
 _config: GroundCortexConfig | None = None
 _db: Database | None = None
+_request_logger = None  # logging.Logger | None
 
 
 def init(manager: InferenceManager, config: GroundCortexConfig, db: Database) -> None:
-    global _inference_manager, _config, _db
+    global _inference_manager, _config, _db, _request_logger
     _inference_manager = manager
     _config = config
     _db = db
+    if config.log_requests:
+        from pathlib import Path
+        from groundcortex.request_logger import make_request_logger
+        _request_logger = make_request_logger(Path(config.buffer_db).parent / "inference.log")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -112,6 +117,15 @@ async def chat_completions(request: ChatCompletionRequest):
     created = int(time.time())
     active = _inference_manager.get_active_version() or "base"
 
+    if _request_logger:
+        from groundcortex.request_logger import log_event
+        log_event(_request_logger, "REQUEST", {
+            "id": completion_id, "model": active,
+            "messages": messages, "max_tokens": request.max_tokens,
+            "temperature": request.temperature, "stream": request.stream,
+            "enable_thinking": request.enable_thinking,
+        })
+
     from groundcortex.model_registry import parse_tool_calls
 
     def _make_chunk(delta: dict, finish_reason: str | None) -> str:
@@ -165,6 +179,11 @@ async def chat_completions(request: ChatCompletionRequest):
             if request.tools:
                 tool_calls = parse_tool_calls(text_so_far, _config.model_name)
                 if tool_calls:
+                    if _request_logger:
+                        from groundcortex.request_logger import log_event
+                        log_event(_request_logger, "RESPONSE", {
+                            "id": completion_id, "finish_reason": "tool_calls", "tool_calls": tool_calls,
+                        })
                     yield _make_chunk({"tool_calls": tool_calls}, "tool_calls")
                     yield "data: [DONE]\n\n"
                     return
@@ -173,6 +192,12 @@ async def chat_completions(request: ChatCompletionRequest):
                 for chunk in accumulated[n_sent:]:
                     yield _make_chunk({"content": chunk}, None)
 
+            if _request_logger:
+                from groundcortex.request_logger import log_event
+                final_text = "".join(accumulated)
+                log_event(_request_logger, "RESPONSE", {
+                    "id": completion_id, "finish_reason": "stop", "content": final_text,
+                })
             yield _make_chunk({}, "stop")
             yield "data: [DONE]\n\n"
 
@@ -192,6 +217,10 @@ async def chat_completions(request: ChatCompletionRequest):
     else:
         message_dict = {"role": "assistant", "content": response_text}
         finish_reason = "stop"
+
+    if _request_logger:
+        from groundcortex.request_logger import log_event
+        log_event(_request_logger, "RESPONSE", {"id": completion_id, "finish_reason": finish_reason, **message_dict})
 
     return {
         "id": completion_id, "object": "chat.completion",

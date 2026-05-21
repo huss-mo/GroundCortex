@@ -88,6 +88,9 @@ class GroundCortexConfig(BaseSettings):
     inference_forwarded_allow_ips: str = "127.0.0.1"
     inference_allowed_hosts: str = ""
 
+    # Request logging
+    log_requests: bool = False
+
     # ------------------------------------------------------------------
     # Validators
     # ------------------------------------------------------------------

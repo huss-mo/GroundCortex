@@ -360,8 +360,16 @@ async def main() -> None:
         except Exception as exc:
             logger.warning("Could not load saved adapter %s: %s", active_run.version, exc)
 
+    # ── Request loggers (optional) ─────────────────────────────────────────────
+    mcp_request_logger = None
+    if config.log_requests:
+        from groundcortex.request_logger import make_request_logger
+        data_dir = Path(config.buffer_db).parent
+        mcp_request_logger = make_request_logger(data_dir / "mcp.log")
+        logger.info("Request logging enabled → %s / %s", data_dir / "inference.log", data_dir / "mcp.log")
+
     # ── MCP server ─────────────────────────────────────────────────────────────
-    mcp = build_mcp_server(config, db, inference_manager)
+    mcp = build_mcp_server(config, db, inference_manager, request_logger=mcp_request_logger)
     init_inference(inference_manager, config, db)
 
     # ── Cron scheduler ─────────────────────────────────────────────────────────
