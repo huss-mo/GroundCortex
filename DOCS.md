@@ -1060,6 +1060,12 @@ All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and e
 | `GROUNDCORTEX_INFERENCE_PORT` | TCP port the inference server listens on | `4344` |
 | `GROUNDCORTEX_INFERENCE_API_KEY` | Bearer token required on every inference request. When unset, no authentication is enforced. | *(empty)* |
 
+**Debugging**
+
+| Variable | Description | Default |
+|---|---|---|
+| `GROUNDCORTEX_LOG_REQUESTS` | When `true`, appends all inference requests and responses to `data/inference.log`, and all MCP tool calls and results to `data/mcp.log`. Each entry is one JSON line prefixed with a timestamp. Useful for debugging what clients are sending. | `false` |
+
 **Configuration priority (highest wins):**
 
 ```
