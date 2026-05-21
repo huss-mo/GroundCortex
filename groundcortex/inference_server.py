@@ -8,7 +8,7 @@ from typing import AsyncIterator
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, model_validator
+from pydantic import BaseModel, ConfigDict, model_validator
 
 from groundcortex.buffer.db import Database
 from groundcortex.config import GroundCortexConfig
@@ -59,6 +59,8 @@ class ChatMessage(BaseModel):
 
 
 class ChatCompletionRequest(BaseModel):
+    model_config = ConfigDict(extra="allow")  # preserve unknown fields for logging/debugging
+
     model: str = "active"
     messages: list[ChatMessage]
     max_tokens: int | None = None  # None = no cap (backend default)
