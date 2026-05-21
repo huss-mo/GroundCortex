@@ -70,9 +70,9 @@ logger = logging.getLogger("groundcortex")
 # CLI helper functions (no server required except --switch)
 # ──────────────────────────────────────────────────────────────────────────────
 
-def _complete_runs_asc(db, include_no_pass: bool = False):
-    """Switchable runs sorted oldest-first."""
-    return db.list_switchable_runs(include_no_pass=include_no_pass)
+def _complete_runs_asc(db, include_no_pass: bool = False, model_name: str | None = None):
+    """Switchable runs sorted oldest-first, optionally filtered by base model."""
+    return db.list_switchable_runs(include_no_pass=include_no_pass, model_name=model_name)
 
 
 def _resolve_version(version_arg: str, runs):
@@ -152,24 +152,28 @@ def _cli_delete(config, version_arg: str) -> None:
 
 def _cli_list(config) -> None:
     db = Database(config.buffer_db)
+    # Show all adapters (no model filter) so history across base models is visible
     runs = _complete_runs_asc(db, include_no_pass=True)
     if not runs:
         print("No trained adapters.")
         return
     n = len(runs)
-    print(f"{'INDEX':>6}  {'VERSION':<10}  {'STATUS':<8}  {'ACTIVE':<6}  {'CREATED'}")
+    print(f"{'INDEX':>6}  {'VERSION':<10}  {'STATUS':<10}  {'COMPAT':<6}  {'ACTIVE':<6}  {'MODEL':<35}  CREATED")
     for i, run in enumerate(runs):
         idx = i - n
         active_flag = "yes" if run.is_active else ""
-        status = run.status
-        print(f"{idx:>6}  {run.version:<10}  {status:<8}  {active_flag:<6}  {run.created_at}")
+        compat = "ok" if run.model_name == config.model_name else "!"
+        model = run.model_name[:35]
+        print(f"{idx:>6}  {run.version:<10}  {run.status:<10}  {compat:<6}  {active_flag:<6}  {model:<35}  {run.created_at}")
 
 
 def _cli_status(config) -> None:
     db = Database(config.buffer_db)
     active = db.get_active_run()
     pending = db.count_pending()
-    runs = _complete_runs_asc(db)
+    # Count only adapters compatible with the current base model
+    runs = _complete_runs_asc(db, model_name=config.model_name)
+    print(f"Base model     : {config.model_name}")
     print(f"Active adapter : {active.version if active else 'none (base model)'}")
     print(f"Pending count  : {pending}")
     print(f"Total adapters : {len(runs)}")
@@ -181,6 +185,7 @@ def _cli_status(config) -> None:
 async def main() -> None:
     config = GroundCortexConfig()
     db = Database(config.buffer_db)
+    db.backfill_model_name(config.model_name)
     inference_manager = create_manager(config)
 
     # ── Load base model ────────────────────────────────────────────────────────

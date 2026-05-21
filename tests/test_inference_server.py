@@ -36,9 +36,10 @@ def _manager(adapters=None, active=None, ready=True, training=False, response="T
     return m
 
 
-def _config_with_key(api_key=""):
+def _config_with_key(api_key="", model_name="test-model"):
     cfg = MagicMock()
     cfg.inference_api_key = api_key
+    cfg.model_name = model_name
     return cfg
 
 
@@ -261,14 +262,18 @@ def _db_mock(runs=None, active_run=None):
     return db
 
 
-def _switch_run(version="v1", status="complete", adapter_path="/adapters/v1"):
-    return TrainingRun(version=version, trigger="mcp", adapter_path=adapter_path, status=status)
+def _switch_run(version="v1", status="complete", adapter_path="/adapters/v1", model_name="test-model"):
+    return TrainingRun(
+        version=version, trigger="mcp", adapter_path=adapter_path,
+        status=status, model_name=model_name,
+    )
 
 
 class TestControlSwitch:
     def _setup(self, runs=None, adapters=None, training=False):
         server_mod._inference_manager = _manager(adapters=adapters or [], training=training)
         server_mod._db = _db_mock(runs=runs or [])
+        server_mod._config = _config_with_key()
 
     def test_no_server_init_returns_503(self):
         r = TestClient(app, raise_server_exceptions=False).post(
@@ -367,3 +372,18 @@ class TestControlSwitch:
             "/v1/control/switch", json={"version": "v1", "force": False}
         )
         assert r.status_code == 200
+
+    def test_model_mismatch_returns_409(self):
+        runs = [_switch_run("v1", model_name="other-model")]
+        self._setup(runs=runs)
+        r = TestClient(app, raise_server_exceptions=False).post(
+            "/v1/control/switch", json={"version": "v1"}
+        )
+        assert r.status_code == 409
+        assert "other-model" in r.json()["detail"]
+
+    def test_model_match_returns_ok(self):
+        runs = [_switch_run("v1", model_name="test-model")]
+        self._setup(runs=runs, adapters=["v1"])
+        body = TestClient(app).post("/v1/control/switch", json={"version": "v1"}).json()
+        assert body["status"] == "ok"

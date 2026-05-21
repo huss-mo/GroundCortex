@@ -53,6 +53,7 @@ def build_mcp_server(
         active_run = db.get_active_run()
         return {
             "active_version": inference_manager.get_active_version(),
+            "model_name": config.model_name,
             "pending_count": db.count_pending(),
             "loaded_adapters": inference_manager.list_loaded_adapters(),
             "last_run": {
@@ -66,8 +67,8 @@ def build_mcp_server(
         }
 
     def _complete_runs_asc(include_no_pass: bool = False):
-        """Switchable runs sorted oldest-first for index resolution."""
-        return db.list_switchable_runs(include_no_pass=include_no_pass)
+        """Switchable runs for the current base model, sorted oldest-first."""
+        return db.list_switchable_runs(include_no_pass=include_no_pass, model_name=config.model_name)
 
     async def _list_adapters() -> dict:
         """Lists all successfully trained adapters in chronological order (oldest first).
@@ -87,6 +88,7 @@ def build_mcp_server(
                 "created_at": r.created_at,
                 "completed_at": r.completed_at,
                 "index": i - n,
+                "model_name": r.model_name,
             }
             for i, r in enumerate(runs)
         ]
@@ -142,6 +144,16 @@ def build_mcp_server(
             run = db.get_run_by_version(version_id)
         if run is None:
             return {"status": "error", "message": f"No training run found for version '{version_id}'."}
+
+        if run.model_name != config.model_name:
+            return {
+                "status": "error",
+                "message": (
+                    f"Adapter '{version_id}' was trained on '{run.model_name}', "
+                    f"current model is '{config.model_name}'. "
+                    "Adapters cannot be loaded across different base models."
+                ),
+            }
 
         if run.status == "no-pass" and not force:
             metrics = run.metrics or {}

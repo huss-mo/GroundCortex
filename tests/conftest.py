@@ -23,4 +23,5 @@ def config(tmp_path):
         source_paths=[],
         remote_source_urls=[],
         eval_enabled=False,
+        model_name="test-model",
     )

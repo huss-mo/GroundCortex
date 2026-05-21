@@ -20,12 +20,13 @@ def _exp(source="file:MEMORY.md", content="hello world", status="pending") -> Ex
     )
 
 
-def _run(version="v1", status="complete", trigger="mcp") -> TrainingRun:
+def _run(version="v1", status="complete", trigger="mcp", model_name="test-model") -> TrainingRun:
     return TrainingRun(
         version=version,
         trigger=trigger,
         adapter_path=f"/adapters/{version}",
         status=status,
+        model_name=model_name,
     )
 
 
@@ -333,3 +334,52 @@ class TestTrainingExamples:
         cached = db.get_cached_examples([exp.id])
         assert len(cached) == 1
         assert cached[0].variant == "scenario"
+
+
+# ---------------------------------------------------------------------------
+# model_name tracking
+# ---------------------------------------------------------------------------
+
+class TestModelTracking:
+    def test_create_run_stores_model_name(self, db):
+        run = _run(version="v1", model_name="my-model")
+        db.create_training_run(run)
+        loaded = db.get_run_by_id(run.id)
+        assert loaded.model_name == "my-model"
+
+    def test_backfill_sets_empty_model_name_rows(self, db):
+        run = _run(version="v1", model_name="test-model")
+        db.create_training_run(run)
+        # Simulate a legacy row by patching model_name to ''
+        import sqlite3
+        con = sqlite3.connect(db._path)
+        con.execute("UPDATE training_runs SET model_name = '' WHERE version = 'v1'")
+        con.commit()
+        con.close()
+        assert db.get_run_by_version("v1").model_name == ""
+        db.backfill_model_name("new-model")
+        assert db.get_run_by_version("v1").model_name == "new-model"
+
+    def test_backfill_leaves_populated_rows_unchanged(self, db):
+        run = _run(version="v1", model_name="existing-model")
+        db.create_training_run(run)
+        db.backfill_model_name("other-model")
+        assert db.get_run_by_version("v1").model_name == "existing-model"
+
+    def test_list_switchable_runs_filters_by_model_name(self, db):
+        db.create_training_run(_run(version="v1", model_name="model-a"))
+        db.create_training_run(_run(version="v2", model_name="model-b"))
+        result = db.list_switchable_runs(model_name="model-a")
+        assert len(result) == 1
+        assert result[0].version == "v1"
+
+    def test_list_switchable_runs_no_filter_returns_all(self, db):
+        db.create_training_run(_run(version="v1", model_name="model-a"))
+        db.create_training_run(_run(version="v2", model_name="model-b"))
+        result = db.list_switchable_runs()
+        assert len(result) == 2
+
+    def test_list_switchable_runs_excludes_wrong_model(self, db):
+        db.create_training_run(_run(version="v1", model_name="model-a"))
+        result = db.list_switchable_runs(model_name="model-b")
+        assert result == []

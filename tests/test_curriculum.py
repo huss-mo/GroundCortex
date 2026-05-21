@@ -26,7 +26,7 @@ def _add_exp(db, content, status="pending") -> Experience:
 
 def _seed_cached_example(db, exp: Experience, version="v1") -> TrainingRun:
     """Save one TrainingExample for a trained experience so get_cached_examples finds it."""
-    run = TrainingRun(version=version, trigger="mcp", adapter_path="/p", status="complete")
+    run = TrainingRun(version=version, trigger="mcp", adapter_path="/p", status="complete", model_name="test-model")
     db.create_training_run(run)
     ex = TrainingExample(
         run_id=run.id,

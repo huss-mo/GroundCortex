@@ -150,8 +150,11 @@ class SwitchRequest(BaseModel):
 
 
 def _complete_runs_asc(include_no_pass: bool = False):
-    """Switchable runs sorted oldest-first for index resolution."""
-    return _db.list_switchable_runs(include_no_pass=include_no_pass)
+    """Switchable runs for the current base model, sorted oldest-first."""
+    return _db.list_switchable_runs(
+        include_no_pass=include_no_pass,
+        model_name=_config.model_name if _config else None,
+    )
 
 
 @app.post("/v1/control/switch")
@@ -191,6 +194,13 @@ async def switch_adapter(req: SwitchRequest):
     if run is None:
         raise HTTPException(404, f"No training run found for version '{version}'.")
 
+    if run.model_name != _config.model_name:
+        raise HTTPException(
+            409,
+            f"Adapter '{version}' was trained on '{run.model_name}', "
+            f"current model is '{_config.model_name}'. "
+            "Adapters cannot be loaded across different base models.",
+        )
     if run.status == "no-pass" and not force:
         metrics = run.metrics or {}
         recall = metrics.get("recall_pct", 0.0)

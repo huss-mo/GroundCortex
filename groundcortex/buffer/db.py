@@ -75,6 +75,13 @@ class Database:
                     messages      TEXT NOT NULL
                 );
             """)
+            # Migration: add model_name column if not present (idempotent)
+            try:
+                con.execute(
+                    "ALTER TABLE training_runs ADD COLUMN model_name TEXT NOT NULL DEFAULT ''"
+                )
+            except sqlite3.OperationalError:
+                pass  # column already exists
 
     # ------------------------------------------------------------------
     # source_files
@@ -180,14 +187,16 @@ class Database:
                 """
                 INSERT INTO training_runs
                     (id, version, trigger, adapter_path, experience_ids,
-                     hyperparams, metrics, status, is_active, created_at, completed_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     hyperparams, metrics, status, is_active, created_at, completed_at,
+                     model_name)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     run.id, run.version, run.trigger, run.adapter_path,
                     json.dumps(run.experience_ids), json.dumps(run.hyperparams),
                     json.dumps(run.metrics) if run.metrics else None,
                     run.status, int(run.is_active), run.created_at, run.completed_at,
+                    run.model_name,
                 ),
             )
 
@@ -271,6 +280,7 @@ class Database:
             adapter_path=row["adapter_path"],
             experience_ids=json.loads(row["experience_ids"]),
             hyperparams=json.loads(row["hyperparams"]),
+            model_name=row["model_name"],
             metrics=json.loads(row["metrics"]) if row["metrics"] else None,
             status=row["status"],
             is_active=bool(row["is_active"]),
@@ -321,19 +331,38 @@ class Database:
                 for r in rows
             ]
 
-    def list_switchable_runs(self, include_no_pass: bool = False) -> list[TrainingRun]:
+    def backfill_model_name(self, model_name: str) -> None:
+        """Set model_name for rows that predate model tracking (model_name = '')."""
+        with self._conn() as con:
+            con.execute(
+                "UPDATE training_runs SET model_name = ? WHERE model_name = ''",
+                (model_name,),
+            )
+
+    def list_switchable_runs(
+        self,
+        include_no_pass: bool = False,
+        model_name: str | None = None,
+    ) -> list[TrainingRun]:
         """Non-deleted complete runs sorted oldest-first.
 
         When include_no_pass=True, no-pass runs are also included (used by
         force-mode switch to allow negative index resolution across all loadable
-        adapters).
+        adapters). When model_name is provided, only runs for that base model
+        are returned.
         """
         statuses = ("complete", "no-pass") if include_no_pass else ("complete",)
         placeholders = ",".join("?" * len(statuses))
+        conditions = [f"status IN ({placeholders})"]
+        params: list = list(statuses)
+        if model_name is not None:
+            conditions.append("model_name = ?")
+            params.append(model_name)
+        where = " AND ".join(conditions)
         with self._conn() as con:
             rows = con.execute(
-                f"SELECT * FROM training_runs WHERE status IN ({placeholders}) ORDER BY created_at ASC",
-                statuses,
+                f"SELECT * FROM training_runs WHERE {where} ORDER BY created_at ASC",
+                params,
             ).fetchall()
             return [self._row_to_run(r) for r in rows]
 

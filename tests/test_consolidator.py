@@ -333,6 +333,15 @@ class TestQualityGate:
         mock_manager.set_active.assert_called_once_with("v1")
         assert db.get_active_run() is not None
 
+    def test_model_name_recorded_on_training_run(self, db, config, tmp_path):
+        from groundcortex.consolidator import run_consolidation
+        _add_pending(db)
+        patch_ctx, _ = _patch_trainer(str(tmp_path / "adapters" / "v1"))
+        with patch_ctx:
+            _run(run_consolidation("mcp", db, config))
+        runs = db.list_runs()
+        assert runs[0].model_name == config.model_name
+
     def test_eval_disabled_skips_quality_gate(self, db, config, tmp_path):
         from unittest.mock import patch
         from groundcortex.consolidator import run_consolidation

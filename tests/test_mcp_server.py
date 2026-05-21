@@ -27,6 +27,7 @@ def _cfg(tmp_path, exposed_tools=None) -> GroundCortexConfig:
         _env_file=None,
         output_dir=tmp_path / "adapters",
         mcp_exposed_tools=exposed_tools or [],
+        model_name="test-model",
     )
 
 
@@ -146,7 +147,7 @@ class TestGetCortexStatus:
     def test_active_run_details_present(self, tmp_path):
         active = TrainingRun(
             version="v1", trigger="mcp", adapter_path="/p",
-            status="complete", is_active=True,
+            status="complete", is_active=True, model_name="test-model",
         )
         mcp = self._build(tmp_path, active_run=active)
         result = self._call(mcp)
@@ -181,7 +182,8 @@ class TestSwitchLoraVersion:
 
     def test_version_not_complete_returns_error(self, tmp_path):
         run = TrainingRun(
-            version="v1", trigger="mcp", adapter_path="/p", status="training"
+            version="v1", trigger="mcp", adapter_path="/p", status="training",
+            model_name="test-model",
         )
         mcp = self._build(tmp_path, run=run)
         result = self._call(mcp, "v1")
@@ -189,7 +191,8 @@ class TestSwitchLoraVersion:
 
     def test_successful_switch_returns_ok(self, tmp_path):
         run = TrainingRun(
-            version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete"
+            version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete",
+            model_name="test-model",
         )
         mcp = self._build(tmp_path, run=run, adapters=["v1"])
         result = self._call(mcp, "v1")
@@ -197,7 +200,8 @@ class TestSwitchLoraVersion:
 
     def test_successful_switch_returns_active_version(self, tmp_path):
         run = TrainingRun(
-            version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete"
+            version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete",
+            model_name="test-model",
         )
         mcp = self._build(tmp_path, run=run, adapters=["v1"])
         result = self._call(mcp, "v1")
@@ -205,7 +209,8 @@ class TestSwitchLoraVersion:
 
     def test_not_loaded_adapter_triggers_load(self, tmp_path):
         run = TrainingRun(
-            version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete"
+            version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete",
+            model_name="test-model",
         )
         mgr = _mgr(adapters=[])  # v1 not yet loaded
         db = MagicMock()
@@ -216,7 +221,8 @@ class TestSwitchLoraVersion:
 
     def test_already_loaded_adapter_not_loaded_again(self, tmp_path):
         run = TrainingRun(
-            version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete"
+            version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete",
+            model_name="test-model",
         )
         mgr = _mgr(adapters=["v1"])  # already loaded
         db = MagicMock()
@@ -248,7 +254,10 @@ class TestSwitchLoraVersion:
 def _make_runs(*versions: str) -> list[TrainingRun]:
     """Build a list of complete TrainingRun objects for the given version names."""
     return [
-        TrainingRun(version=v, trigger="mcp", adapter_path=f"/adapters/{v}", status="complete")
+        TrainingRun(
+            version=v, trigger="mcp", adapter_path=f"/adapters/{v}",
+            status="complete", model_name="test-model",
+        )
         for v in versions
     ]
 
@@ -303,7 +312,10 @@ class TestListLoraVersions:
         assert result["active_version"] == "v2"
 
     def test_failed_runs_excluded(self, tmp_path):
-        complete = TrainingRun(version="v2", trigger="mcp", adapter_path="/p", status="complete")
+        complete = TrainingRun(
+            version="v2", trigger="mcp", adapter_path="/p", status="complete",
+            model_name="test-model",
+        )
         db = MagicMock()
         # list_switchable_runs already filters out failed/deleted runs at the DB layer
         db.list_switchable_runs.return_value = [complete]
@@ -390,6 +402,7 @@ def _make_no_pass_run(version="v1") -> TrainingRun:
         trigger="mcp",
         adapter_path=f"/adapters/{version}",
         status="no-pass",
+        model_name="test-model",
         metrics={"recall_pct": 0.3, "sanity_pct": 0.4, "passed": False, "probe_count": 5, "sanity_count": 5},
     )
 
@@ -432,7 +445,10 @@ class TestSwitchNoPassAdapter:
         assert result["active_version"] == "v1"
 
     def test_negative_index_excludes_no_pass_without_force(self, tmp_path):
-        complete = TrainingRun(version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete")
+        complete = TrainingRun(
+            version="v1", trigger="mcp", adapter_path="/adapters/v1",
+            status="complete", model_name="test-model",
+        )
         db = MagicMock()
         # Without force: list_switchable_runs returns only complete runs
         db.list_switchable_runs.return_value = [complete]
@@ -447,7 +463,10 @@ class TestSwitchNoPassAdapter:
         assert result["active_version"] == "v1"
 
     def test_negative_index_includes_no_pass_with_force(self, tmp_path):
-        complete = TrainingRun(version="v1", trigger="mcp", adapter_path="/adapters/v1", status="complete")
+        complete = TrainingRun(
+            version="v1", trigger="mcp", adapter_path="/adapters/v1",
+            status="complete", model_name="test-model",
+        )
         no_pass = _make_no_pass_run("v2")
         db = MagicMock()
         # With force: list_switchable_runs returns both complete and no-pass
@@ -461,3 +480,50 @@ class TestSwitchNoPassAdapter:
         result = _parse(_run(mcp.call_tool("switch_adapter", {"version_id": "-1", "force": True})))
         assert result["status"] == "ok"
         assert result["active_version"] == "v2"
+
+
+# ---------------------------------------------------------------------------
+# switch_adapter - model mismatch
+# ---------------------------------------------------------------------------
+
+class TestSwitchModelMismatch:
+    def test_model_mismatch_by_version_name_returns_error(self, tmp_path):
+        mismatched = TrainingRun(
+            version="v1", trigger="mcp", adapter_path="/adapters/v1",
+            status="complete", model_name="other-model",
+        )
+        db = MagicMock()
+        db.get_run_by_version.return_value = mismatched
+        mcp = build_mcp_server(_cfg(tmp_path, ["switch_adapter"]), db, _mgr())
+        result = _parse(_run(mcp.call_tool("switch_adapter", {"version_id": "v1"})))
+        assert result["status"] == "error"
+        assert "other-model" in result["message"]
+        assert "test-model" in result["message"]
+
+    def test_model_mismatch_error_not_loaded(self, tmp_path):
+        mismatched = TrainingRun(
+            version="v1", trigger="mcp", adapter_path="/adapters/v1",
+            status="complete", model_name="other-model",
+        )
+        mgr = _mgr(adapters=[])
+        db = MagicMock()
+        db.get_run_by_version.return_value = mismatched
+        mcp = build_mcp_server(_cfg(tmp_path, ["switch_adapter"]), db, mgr)
+        _run(mcp.call_tool("switch_adapter", {"version_id": "v1"}))
+        mgr.load_adapter.assert_not_called()
+
+    def test_list_adapters_includes_model_name(self, tmp_path):
+        runs = _make_runs("v1", "v2")
+        db = MagicMock()
+        db.list_switchable_runs.return_value = runs
+        mcp = build_mcp_server(_cfg(tmp_path, ["list_adapters"]), db, _mgr())
+        result = _parse(_run(mcp.call_tool("list_adapters", {})))
+        for entry in result["versions"]:
+            assert "model_name" in entry
+            assert entry["model_name"] == "test-model"
+
+    def test_get_status_includes_model_name(self, tmp_path):
+        mcp = build_mcp_server(_cfg(tmp_path, ["get_status"]), _db(), _mgr())
+        result = _parse(_run(mcp.call_tool("get_status", {})))
+        assert "model_name" in result
+        assert result["model_name"] == "test-model"

@@ -44,6 +44,7 @@ class TrainingRun(BaseModel):
     adapter_path: str
     experience_ids: list[str] = Field(default_factory=list)
     hyperparams: dict = Field(default_factory=dict)
+    model_name: str                               # base model this adapter was trained on
     metrics: dict | None = None                   # {recall_pct, reasoning_pct, sanity_score}
     status: Literal["training", "complete", "failed", "deleted", "no-pass"] = "training"
     is_active: bool = False

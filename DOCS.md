@@ -533,6 +533,7 @@ Returns the current state of the service.
 | Field | Type | Description |
 |---|---|---|
 | `active_version` | string or null | Version ID of the currently active adapter |
+| `model_name` | string | Currently configured base model |
 | `pending_count` | int | Number of experiences not yet in any LoRA |
 | `loaded_adapters` | list[string] | All adapter versions currently loaded in memory |
 | `last_run` | object or null | Details of the most recent training run |
@@ -569,6 +570,7 @@ Each entry in `versions`:
 | `created_at` | string | ISO datetime when the run started |
 | `completed_at` | string or null | ISO datetime when training finished |
 | `index` | int | Negative index for use with `switch_adapter` (`-1` = most recent) |
+| `model_name` | string | Base model the adapter was trained on |
 
 ---
 
@@ -592,7 +594,7 @@ Returns:
 | `previous_version` | string or null | The previously active version - only present when `status="ok"` |
 | `message` | string | Error description - only present when `status="error"`. For `no-pass` adapters includes recall and sanity percentages. |
 
-Common error conditions: version not found; version exists but status is not `complete` or `no-pass`; index out of range; training is currently in progress (when `OFFLOAD_DURING_TRAINING=true`, the model is temporarily unloaded and cannot load a new adapter); adapter has `no-pass` status and `force` is `false`.
+Common error conditions: version not found; version exists but status is not `complete` or `no-pass`; index out of range; training is currently in progress (when `OFFLOAD_DURING_TRAINING=true`, the model is temporarily unloaded and cannot load a new adapter); adapter has `no-pass` status and `force` is `false`; adapter was trained on a different base model (HTTP 409 / `status="error"` — `force` does not override this, as LoRA weight tensors are architecture-specific and physically cannot load across different base models).
 
 ### Controlling Tool Exposure
 
@@ -764,7 +766,7 @@ Field validators handle comma-separated list parsing for `source_paths`, `remote
 |---|---|
 | `source_files` | Tracks each source by path/URL with SHA-256 hash and last-seen timestamp |
 | `experiences` | One row per parsed section per ingestion snapshot; status: `pending` / `trained` / `superseded` |
-| `training_runs` | One row per LoRA adapter; records version, trigger, hyperparams, metrics, status, and which adapter is active |
+| `training_runs` | One row per LoRA adapter; records version, trigger, hyperparams, metrics, status, model_name (base model the adapter was trained on), and which adapter is active |
 | `training_examples` | Audit trail of every Q&A training example generated, linked to the experience and run that produced it |
 
 Version numbers are auto-incremented (`v1`, `v2`, …) based on `COUNT(*)` from `training_runs`.
@@ -1022,16 +1024,19 @@ flags are passed, no server is started — the command runs and exits.
 python -m groundcortex --list
 ```
 
-Prints all non-deleted trained adapters in chronological order (oldest first). Reads the local
-database directly — no server required.
+Prints all non-deleted trained adapters in chronological order (oldest first). Shows adapters
+from all base models, not just the current one. Reads the local database directly — no server
+required.
 
 Example output:
 ```
- INDEX  VERSION     ACTIVE  CREATED
-    -3  v1                  2026-05-15T10:00:00
-    -2  v2                  2026-05-16T14:30:00
-    -1  v3          yes     2026-05-17T09:00:00
+ INDEX  VERSION     STATUS      COMPAT  ACTIVE  MODEL                                CREATED
+    -2  v1          complete    ok              mlx-community/Qwen3.6-35B-A3B-4bit  2026-05-15T10:00:00
+    -1  v2          complete    ok      yes     mlx-community/Qwen3.6-35B-A3B-4bit  2026-05-17T09:00:00
 ```
+
+The `COMPAT` column shows `ok` when the adapter's base model matches `GROUNDCORTEX_MODEL_NAME`,
+or `!` when it was trained on a different model and cannot be loaded.
 
 ### `--status`
 
@@ -1039,8 +1044,18 @@ Example output:
 python -m groundcortex --status
 ```
 
-Shows the active adapter version, pending experience count, total adapter count, and last
-training timestamp. Reads the local database — no server required.
+Shows the current base model, active adapter version, pending experience count, total adapter
+count (compatible with the current base model only), and last training timestamp. Reads the
+local database — no server required.
+
+Example output:
+```
+Base model     : mlx-community/Qwen3.6-35B-A3B-4bit
+Active adapter : v2
+Pending count  : 0
+Total adapters : 2
+Last trained   : v2 at 2026-05-17T09:00:00
+```
 
 ### `--switch VERSION`
 

@@ -70,6 +70,7 @@ async def run_consolidation(
         adapter_path="",  # filled in after training
         experience_ids=[exp.id for exp in scope],
         hyperparams=trainer.hyperparams_snapshot(),
+        model_name=config.model_name,
         status="training",
     )
     db.create_training_run(run)
