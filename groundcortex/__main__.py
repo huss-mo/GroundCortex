@@ -307,6 +307,11 @@ def _cli_status(config) -> None:
 
 
 async def main() -> None:
+    # Export all .env vars to os.environ before importing torch/transformers,
+    # so env vars like HF_HOME take effect before HuggingFace reads them.
+    from dotenv import load_dotenv
+    load_dotenv(override=False)
+
     from groundcortex.inference.manager import create_manager
     from groundcortex.inference_server import app as inference_app
     from groundcortex.inference_server import init as init_inference
