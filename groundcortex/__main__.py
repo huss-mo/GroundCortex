@@ -297,6 +297,16 @@ def _cli_list(config) -> None:
         print(f"{idx:>6}  {run.version:<10}  {run.status:<10}  {compat:<6}  {active_flag:<6}  {model:<35}  {run.created_at}")
 
 
+def _port_open(host: str, port: int) -> bool:
+    import socket
+    connect_host = "127.0.0.1" if host in ("0.0.0.0", "::") else host
+    try:
+        with socket.create_connection((connect_host, port), timeout=1):
+            return True
+    except OSError:
+        return False
+
+
 def _cli_status(config) -> None:
     db = Database(config.buffer_db)
     active = db.get_active_run()
@@ -304,7 +314,10 @@ def _cli_status(config) -> None:
     runs = _complete_runs_asc(db, model_name=config.model_name)
     pid = _read_pid(_pid_file(config))
     if pid and _process_alive(pid):
-        server_status = f"running (PID {pid})"
+        if _port_open(config.inference_host, config.inference_port):
+            server_status = f"running (PID {pid})"
+        else:
+            server_status = f"starting (PID {pid})"
     else:
         server_status = "stopped"
     print(f"Server         : {server_status}")
