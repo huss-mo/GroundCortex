@@ -44,7 +44,7 @@ For a detailed breakdown of the consolidation pipeline, change detection, experi
 
 ```bash
 git clone https://github.com/huss-mo/GroundCortex && cd GroundCortex
-cp .env.example .env
+cp groundcortex/config/.env.example .env
 docker compose up -d
 # MCP server:       http://127.0.0.1:4343/mcp
 # Inference server: http://127.0.0.1:4344/v1/chat/completions
@@ -55,10 +55,10 @@ On first start, the base model is downloaded from Hugging Face into `./data/mode
 ### Option 2 - uv / pip
 
 ```bash
-git clone https://github.com/huss-mo/GroundCortex && cd GroundCortex
-uv sync          # or: pip install .
-cp .env.example .env
-groundcortex        # starts as background daemon; use --stop to stop
+pip install groundcortex   # or: uv add groundcortex
+groundcortex               # seeds ~/.groundcortex/.env.example on first run
+                           # cp ~/.groundcortex/.env.example ~/.groundcortex/.env
+                           # edit ~/.groundcortex/.env, then restart
 # MCP server:       http://127.0.0.1:4343/mcp
 # Inference server: http://127.0.0.1:4344/v1/chat/completions
 ```
@@ -242,7 +242,8 @@ GroundCortex is built around three values:
 ```bash
 git clone https://github.com/huss-mo/GroundCortex.git
 cd GroundCortex
-uv sync               # or: pip install -e ".[test]"
+uv sync                                          # or: pip install -e ".[test]"
+cp groundcortex/config/.env.example .env         # optional: keep data local
 ```
 
 ### Running the Test Suite

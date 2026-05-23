@@ -33,6 +33,9 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["groundcortex"]
+artifacts = [
+    "groundcortex/config/.env.example",
+]
 
 # ---------------------------------------------------------------------------
 # PyTorch index configuration

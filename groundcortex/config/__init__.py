@@ -1,27 +1,43 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
-from typing import Literal
 
-from pydantic import field_validator, model_validator
+from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _ALL_MCP_TOOLS = {"trigger_consolidation", "get_status", "switch_adapter", "list_adapters"}
 
 
+def _get_root_dir() -> Path:
+    raw = os.environ.get("GROUNDCORTEX_ROOT_DIR")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".groundcortex"
+
+
+def _env_file_paths() -> tuple[str, str]:
+    root = _get_root_dir()
+    # cwd .env is last → higher priority → dev/Docker override wins
+    return (str(root / ".env"), ".env")
+
+
 class GroundCortexConfig(BaseSettings):
     model_config = SettingsConfigDict(
         env_prefix="GROUNDCORTEX_",
-        env_file=".env",
+        env_file=_env_file_paths(),
         env_file_encoding="utf-8",
         extra="ignore",
         env_ignore_empty=True,
     )
 
+    # Root directory for all data (adapters, database, logs, pid file)
+    root_dir: Path = Field(default_factory=lambda: Path.home() / ".groundcortex")
+
     # Model
     model_name: str = "Qwen/Qwen3.5-2B"
-    output_dir: Path = Path("./data/adapters")
-    buffer_db: Path = Path("./data/groundcortex.db")
+    output_dir: Path | None = None   # None → root_dir / "adapters"
+    buffer_db: Path | None = None    # None → root_dir / "groundcortex.db"
 
     # Training
     rank: int = 32
@@ -36,7 +52,7 @@ class GroundCortexConfig(BaseSettings):
     # macOS / Apple Silicon: auto-routes to mlx-lm 4-bit QLoRA (install with .[mlx]).
     # MPS without mlx-lm, or CPU: fp16 fallback (torchao AffineQuantizedTensor has no MPS dispatch).
     use_qlora: bool = False
-    
+
     # Post-training quality gate
     eval_enabled: bool = True
     eval_validation_threshold: float = 0.6   # fraction of held-out probes that must pass
@@ -75,7 +91,7 @@ class GroundCortexConfig(BaseSettings):
     # Default "127.0.0.1" means only a local proxy is trusted.
     # Set to "*" only when a reverse proxy controls all ingress.
     mcp_forwarded_allow_ips: str = "127.0.0.1"
-    
+
     # DNS rebinding protection: comma-separated Host header values to accept in
     # addition to localhost and 127.0.0.1 (always allowed). Leave empty for
     # local-only access. Set to your LAN IP or hostname when binding to 0.0.0.0.
@@ -115,6 +131,15 @@ class GroundCortexConfig(BaseSettings):
         if isinstance(v, str):
             return [t.strip() for t in v.split(",") if t.strip()]
         return v  # type: ignore[return-value]
+
+    @model_validator(mode="after")
+    def resolve_data_paths(self) -> "GroundCortexConfig":
+        self.root_dir = self.root_dir.expanduser()
+        if self.output_dir is None:
+            self.output_dir = self.root_dir / "adapters"
+        if self.buffer_db is None:
+            self.buffer_db = self.root_dir / "groundcortex.db"
+        return self
 
     @model_validator(mode="after")
     def resolve_exposed_tools(self) -> "GroundCortexConfig":

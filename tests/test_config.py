@@ -10,7 +10,7 @@ _ALL_TOOLS = {"trigger_consolidation", "get_status", "switch_adapter", "list_ada
 
 def _cfg(tmp_path, **kwargs) -> GroundCortexConfig:
     """Build a config that ignores the project .env file."""
-    kwargs.setdefault("output_dir", tmp_path / "adapters")
+    kwargs.setdefault("root_dir", tmp_path)
     return GroundCortexConfig(_env_file=None, **kwargs)
 
 
@@ -60,6 +60,11 @@ class TestDefaults:
         assert cfg.mcp_allowed_hosts == ""
         assert cfg.inference_forwarded_allow_ips == "127.0.0.1"
         assert cfg.inference_allowed_hosts == ""
+
+    def test_data_paths_resolve_from_root_dir(self, tmp_path):
+        cfg = _cfg(tmp_path)
+        assert cfg.output_dir == tmp_path / "adapters"
+        assert cfg.buffer_db == tmp_path / "groundcortex.db"
 
     def test_empty_mcp_exposed_tools_defaults_to_all(self, tmp_path):
         cfg = _cfg(tmp_path, mcp_exposed_tools=[])

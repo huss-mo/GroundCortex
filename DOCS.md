@@ -41,7 +41,7 @@ For a project overview and quick start, see [README.md](README.md).
   - [Programmatic Usage](#programmatic-usage)
   - [Architecture](#architecture)
     - [Architectural Layers](#architectural-layers)
-      - [`config.py` - Settings](#configpy---settings)
+      - [`config/` - Settings](#config---settings)
       - [`ingestion/` - Source Adapters](#ingestion---source-adapters)
       - [`buffer/db.py` - Database](#bufferdbpy---database)
       - [`pipeline/models.py` - Data Models](#pipelinemodelspy---data-models)
@@ -70,7 +70,7 @@ Docker is the recommended way to run GroundCortex. It requires no Python environ
 
 ```bash
 git clone https://github.com/huss-mo/GroundCortex && cd GroundCortex
-cp .env.example .env
+cp groundcortex/config/.env.example .env
 # Edit .env to configure source paths, API keys, etc.
 docker compose up -d
 ```
@@ -87,20 +87,33 @@ These directories are git-ignored and docker-ignored. They are bind-mounted into
 
 ### Option 2 - uv / pip
 
-For development or direct use without Docker:
+For a pip/uv install:
 
 ```bash
-# Install
-pip install .           # or: uv sync
+pip install groundcortex    # or: uv add groundcortex
+groundcortex                # first run seeds ~/.groundcortex/.env.example
+```
 
-# Copy and edit the config
-cp .env.example .env
+On first startup GroundCortex writes a template config to `~/.groundcortex/.env.example`. Copy and edit it to configure source paths, API keys, and other settings:
 
-# Start all three services as a background daemon (MCP server + inference server + scheduler)
+```bash
+cp ~/.groundcortex/.env.example ~/.groundcortex/.env
+# edit ~/.groundcortex/.env
 groundcortex
 ```
 
-Configuration is read from `.env` in the working directory. Set `GROUNDCORTEX_SOURCE_PATHS` and other settings there - see [Configuration Reference](#configuration-reference).
+All data (adapters, database, logs, pid file) lives under `~/.groundcortex/` by default. Override the root directory with `GROUNDCORTEX_ROOT_DIR`.
+
+For development or Docker (from-source):
+
+```bash
+git clone https://github.com/huss-mo/GroundCortex && cd GroundCortex
+uv sync                                     # or: pip install -e ".[test]"
+cp groundcortex/config/.env.example .env   # keep data in ./data/ (Docker / dev)
+groundcortex
+```
+
+When a `.env` file exists in the working directory it takes priority over `~/.groundcortex/.env`, so Docker and dev-from-source workflows work without touching the home directory. See [Configuration Reference](#configuration-reference).
 
 ### GPU Setup
 
@@ -799,9 +812,11 @@ python examples/run_pipeline.py
 
 ### Architectural Layers
 
-#### `config.py` - Settings
+#### `config/` - Settings
 
-`GroundCortexConfig` is a Pydantic Settings model. It reads from `.env` (or environment variables) and validates all settings on startup. The `output_dir` is created automatically if it does not exist.
+`GroundCortexConfig` is a Pydantic Settings model (`groundcortex/config/__init__.py`). It reads from `~/.groundcortex/.env` and then `.env` in the working directory (cwd wins). All settings are validated on startup. `output_dir` is created automatically if it does not exist.
+
+`_get_root_dir()` reads `GROUNDCORTEX_ROOT_DIR` directly from the OS environment before the Pydantic model loads — this is necessary to locate the `.env` file itself. `output_dir` and `buffer_db` default to `$ROOT_DIR/adapters` and `$ROOT_DIR/groundcortex.db` respectively when not set.
 
 Field validators handle comma-separated list parsing for `source_paths`, `remote_source_urls`, and `mcp_exposed_tools` - this is how `.env` file values are split into Python lists. Environment variables set as OS env vars (not via `.env` file) must use JSON array format for list fields: `["path1","path2"]`.
 
@@ -1000,15 +1015,21 @@ POST /v1/chat/completions now returns responses from new adapter
 
 ## Configuration Reference
 
-All settings use the `GROUNDCORTEX_` prefix. Copy `.env.example` to `.env` and edit it - the file includes descriptions and defaults for every option.
+All settings use the `GROUNDCORTEX_` prefix. The config template is seeded to `~/.groundcortex/.env.example` on first run (pip install) or available at `groundcortex/config/.env.example` in the source tree (Docker / dev). It includes descriptions and defaults for every option.
+
+**Root Directory**
+
+| Variable | Description | Default |
+|---|---|---|
+| `GROUNDCORTEX_ROOT_DIR` | Base directory for all data, config, logs, and the pid file | `~/.groundcortex` |
 
 **Model**
 
 | Variable | Description | Default |
 |---|---|---|
 | `GROUNDCORTEX_MODEL_NAME` | HuggingFace model ID for the base model | `Qwen/Qwen3.5-2B` |
-| `GROUNDCORTEX_OUTPUT_DIR` | Directory where trained LoRA adapters are saved | `./data/adapters` |
-| `GROUNDCORTEX_BUFFER_DB` | Path to the SQLite database file | `./data/groundcortex.db` |
+| `GROUNDCORTEX_OUTPUT_DIR` | Directory where trained LoRA adapters are saved | `$ROOT_DIR/adapters` |
+| `GROUNDCORTEX_BUFFER_DB` | Path to the SQLite database file | `$ROOT_DIR/groundcortex.db` |
 
 **Training Hyperparameters**
 
@@ -1087,7 +1108,7 @@ groundcortex --stop    # stop the running daemon
 ```
 
 `--start` (and the bare `groundcortex` command) spawns the server as a background process, writes
-a PID file to `./data/groundcortex.pid`, and appends logs to `./data/groundcortex.log`. The
+a PID file to `$ROOT_DIR/groundcortex.pid`, and appends logs to `$ROOT_DIR/groundcortex.log`. The
 terminal is free immediately after the command returns.
 
 `--start` always stops any running instance first, so it doubles as a restart command - safe to
@@ -1095,7 +1116,7 @@ run after a config change.
 
 ```
 GroundCortex started (PID 12345).
-Logs : ./data/groundcortex.log
+Logs : ~/.groundcortex/groundcortex.log
 Stop : groundcortex --stop
 ```
 
@@ -1206,7 +1227,7 @@ background inside the daemon process; monitor progress via logs or `--status`:
 ```
 Training started.
 Monitor: groundcortex --status
-Logs   : ./data/groundcortex.log
+Logs   : ~/.groundcortex/groundcortex.log
 ```
 
 If training is already in progress, the command prints an error and exits non-zero. Requires the

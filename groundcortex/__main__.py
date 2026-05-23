@@ -29,6 +29,31 @@ import uvicorn
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 
+def _get_root_dir() -> Path:
+    # Duplicated from config/__init__.py to avoid circular import at startup.
+    raw = os.environ.get("GROUNDCORTEX_ROOT_DIR")
+    if raw:
+        return Path(raw).expanduser()
+    return Path.home() / ".groundcortex"
+
+
+def _seed_example_config() -> None:
+    """Copy bundled .env.example into root_dir on first run (idempotent)."""
+    import importlib.resources as pkg_resources
+    root = _get_root_dir()
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return
+    dest = root / ".env.example"
+    if not dest.exists():
+        try:
+            ref = pkg_resources.files("groundcortex.config").joinpath(".env.example")
+            dest.write_bytes(ref.read_bytes())
+        except Exception:
+            pass  # non-fatal
+
+
 def wrap_trusted_hosts(asgi_app, allowed_hosts_cfg: str):
     """Wrap an ASGI app with DNS rebinding protection.
 
@@ -420,6 +445,8 @@ async def main() -> None:
 
 def main_sync() -> None:
     import argparse
+
+    _seed_example_config()
 
     parser = argparse.ArgumentParser(
         prog="groundcortex",
