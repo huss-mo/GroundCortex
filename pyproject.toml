@@ -1,7 +1,8 @@
 [project]
 name = "groundcortex"
-version = "0.2.0"
-description = "Automated memory consolidation engine for AI agents using LoRA fine-tuning"
+version = "0.2.1"
+description = "Automated thought consolidation engine for AI agents using LoRA fine-tuning"
+readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
     "torch",
@@ -19,6 +20,10 @@ dependencies = [
     "apscheduler",
     "torchao",
 ]
+
+[project.urls]
+Documentation = "https://github.com/huss-mo/GroundCortex/blob/master/DOCS.md"
+Issues = "https://github.com/huss-mo/GroundCortex/issues"
 
 [project.optional-dependencies]
 mlx = ["mlx-lm"]
