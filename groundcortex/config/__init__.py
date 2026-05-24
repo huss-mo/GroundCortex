@@ -73,6 +73,15 @@ class GroundCortexConfig(BaseSettings):
     # Ingestion - local
     source_paths: list[Path] = []
 
+    # Ingestion - sectioning
+    section_depth: int = 3                # heading levels to split on: 1=#, 2=##, 3=###
+    paragraph_split_enabled: bool = True
+    paragraph_splitter: str = "\n\n"      # separator used to split paragraphs
+    paragraph_min_chars: int = 25         # 0 = no minimum
+    word_split_enabled: bool = True
+    word_split_size: int = 50             # words per chunk
+    word_split_overlap: int = 5           # overlapping words between adjacent chunks
+
     # Ingestion - remote
     remote_source_urls: list[str] = []
     remote_source_api_key: str = ""
@@ -110,6 +119,13 @@ class GroundCortexConfig(BaseSettings):
     # ------------------------------------------------------------------
     # Validators
     # ------------------------------------------------------------------
+
+    @field_validator("paragraph_splitter", mode="before")
+    @classmethod
+    def unescape_splitter(cls, v: object) -> str:
+        if isinstance(v, str):
+            return v.replace("\\n", "\n").replace("\\t", "\t").replace("\\r", "\r")
+        return v  # type: ignore[return-value]
 
     @field_validator("source_paths", mode="before")
     @classmethod

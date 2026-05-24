@@ -25,6 +25,7 @@ class RemoteFileAdapter(IngestionAdapter):
     """
 
     def __init__(self, config: GroundCortexConfig, db: Database) -> None:
+        self._config = config
         self._urls = config.remote_source_urls
         self._api_key = config.remote_source_api_key
         self._db = db
@@ -41,7 +42,7 @@ class RemoteFileAdapter(IngestionAdapter):
                     response = client.get(url, headers=headers)
                     response.raise_for_status()
                     content = response.text
-                    new = parse_content(content, url, "remote", self._db)
+                    new = parse_content(content, url, "remote", self._db, self._config)
                     results.extend(new)
                     logger.info("Remote ingestion: %s → %d new experiences", url, len(new))
                 except httpx.HTTPError as exc:

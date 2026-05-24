@@ -316,19 +316,34 @@ For a complete end-to-end example, see `examples/run_pipeline.py`.
 
 ### Source File Format
 
-GroundCortex parses two formats:
+GroundCortex splits source content into experiences using a three-stage cascade. Each stage feeds the next, so even a headingless wall of text gets properly chunked.
 
-**Sectioned files** - files with `## ` level-2 Markdown headings are split on those headings. Each heading and its following content become one experience. Any `## ` heading works - a topic name, a date, a document section title.
+**Stage 1 — Heading split** (`SECTION_DEPTH`, default `3`)
+
+Content is split on Markdown headings up to the configured depth (`#`, `##`, `###` for depth 3). Each heading and its body become one block. The full ancestor heading chain is tracked and prepended to every downstream chunk so the Q&A generator has structural context.
+
+Files with no headings produce one block containing the full content.
+
+**Stage 2 — Paragraph split** (`PARAGRAPH_SPLIT_ENABLED`, default `true`)
+
+Each heading block is further split on `PARAGRAPH_SPLITTER` (default: blank line `\n\n`). Paragraphs shorter than `PARAGRAPH_MIN_CHARS` (default: 25) are discarded — they're typically noise. The heading chain is prepended to each paragraph chunk.
+
+A fact like *"the owner hates long sentences"* (31 chars) survives the default threshold. Set `PARAGRAPH_MIN_CHARS=0` to keep everything regardless of length.
+
+**Stage 3 — Word split** (`WORD_SPLIT_ENABLED`, default `true`)
+
+Paragraphs longer than `WORD_SPLIT_SIZE` words (default: 50) are split into overlapping chunks. `WORD_SPLIT_OVERLAP` (default: 5) words are shared between adjacent chunks to preserve context at boundaries. The heading chain is prepended to each chunk.
 
 ```markdown
 ## Regulatory Update - May 2026
 All data retention periods were reduced to 90 days following the revised compliance policy.
+This affects all user records stored before the cutoff date.
 
 ## Architecture Decision
 The inference layer uses PEFT multi-adapter hot-swap. Adapters are never stacked on each other.
 ```
 
-**Plain files** - files without `## ` headings are treated as a single experience. Use this for flat notes, configuration summaries, documentation pages, or any file that should be ingested as one unit.
+The two sections above each produce one experience (short paragraphs, no word-splitting needed). A 500-word section would produce multiple overlapping experiences, all carrying the heading context.
 
 ---
 
@@ -1077,6 +1092,20 @@ All settings use the `GROUNDCORTEX_` prefix. The config template is seeded to `~
 | `GROUNDCORTEX_SOURCE_PATHS` | Comma-separated local file paths to ingest | *(empty)* |
 | `GROUNDCORTEX_REMOTE_SOURCE_URLS` | Comma-separated HTTP URLs serving file content | *(empty)* |
 | `GROUNDCORTEX_REMOTE_SOURCE_API_KEY` | Bearer token sent to all remote source URLs | *(empty)* |
+
+**Ingestion — Sectioning**
+
+Controls how source file content is split into experiences. The splitter runs three stages in sequence: heading → paragraph → word. Each stage is independently configurable.
+
+| Variable | Description | Default |
+|---|---|---|
+| `GROUNDCORTEX_SECTION_DEPTH` | Max heading level to split on. `1` = `#` only, `2` = `#`+`##`, `3` = `#`+`##`+`###` | `3` |
+| `GROUNDCORTEX_PARAGRAPH_SPLIT_ENABLED` | Further split heading sections on paragraph boundaries | `true` |
+| `GROUNDCORTEX_PARAGRAPH_SPLITTER` | String used to detect paragraph boundaries. Use `\n\n` for blank-line paragraphs, `\n` for single newlines. | `\n\n` |
+| `GROUNDCORTEX_PARAGRAPH_MIN_CHARS` | Discard paragraphs shorter than this many characters. `0` = keep all | `25` |
+| `GROUNDCORTEX_WORD_SPLIT_ENABLED` | Further split long paragraphs by word count | `true` |
+| `GROUNDCORTEX_WORD_SPLIT_SIZE` | Maximum words per chunk | `50` |
+| `GROUNDCORTEX_WORD_SPLIT_OVERLAP` | Overlapping words between adjacent word-split chunks (preserves context at boundaries) | `5` |
 
 **Cron Scheduler**
 
