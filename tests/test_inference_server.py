@@ -390,6 +390,33 @@ class TestControlSwitch:
 
 
 # ---------------------------------------------------------------------------
+# POST /v1/control/dry-run
+# ---------------------------------------------------------------------------
+
+class TestControlDryRun:
+    def test_503_when_not_initialized(self):
+        r = TestClient(app, raise_server_exceptions=False).post("/v1/control/dry-run")
+        assert r.status_code == 503
+
+    def test_409_when_training_in_progress(self):
+        server_mod._config = _config_with_key()
+        server_mod._inference_manager = _manager(training=True)
+        r = TestClient(app, raise_server_exceptions=False).post("/v1/control/dry-run")
+        assert r.status_code == 409
+
+    def test_returns_ok_or_skipped(self, tmp_path):
+        from unittest.mock import patch, AsyncMock
+        server_mod._config = _config_with_key()
+        server_mod._inference_manager = _manager()
+        skipped = {"status": "skipped", "reason": "no_sources", "total_chunks": 0}
+        mock_fn = AsyncMock(return_value=skipped)
+        with patch("groundcortex.consolidator.run_dry_run", mock_fn):
+            r = TestClient(app).post("/v1/control/dry-run")
+        assert r.status_code == 200
+        assert r.json()["status"] in ("ok", "skipped")
+
+
+# ---------------------------------------------------------------------------
 # Tool calling
 # ---------------------------------------------------------------------------
 

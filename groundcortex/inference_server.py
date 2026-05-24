@@ -346,3 +346,13 @@ async def trigger_training():
 
     asyncio.create_task(_run())
     return {"status": "started"}
+
+
+@app.post("/v1/control/dry-run")
+async def trigger_dry_run():
+    if _config is None or _inference_manager is None:
+        raise HTTPException(503, "Server not initialized.")
+    if _inference_manager.is_training:
+        raise HTTPException(409, "Training in progress, try again later.")
+    from groundcortex.consolidator import run_dry_run
+    return await run_dry_run(_config, _inference_manager)

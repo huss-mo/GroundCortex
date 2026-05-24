@@ -1282,3 +1282,42 @@ Logs   : ~/.groundcortex/groundcortex.log
 
 If training is already in progress, the command prints an error and exits non-zero. Requires the
 server to be running.
+
+### `--dry-run`
+
+```bash
+groundcortex --dry-run
+```
+
+Previews what would be trained without running the training pipeline. The daemon reads all
+configured source files, splits them into chunks using the current sectioning config, and generates
+Q&A examples for each chunk using the loaded model — exactly as a real consolidation would, but
+without writing to the database or training.
+
+Results are written to `$ROOT_DIR/dry-run.md` (default: `~/.groundcortex/dry-run.md`). Each chunk
+appears as a Markdown section with the raw content blockquoted and the generated Q&A pairs in a
+fenced JSON code block:
+
+```markdown
+## Chunk 1 of 5
+**Source:** `file:/path/to/notes.md`
+
+**Content:**
+
+> # Section Title
+> The actual chunk text here...
+
+**Generated Q&A:**
+
+\`\`\`json
+[
+  { "question": "...", "answer": "...", "variant": "generated" },
+  ...
+]
+\`\`\`
+```
+
+Use this command to verify that your source files are sectioned correctly and that the generated
+Q&A is high quality before committing to a full training run.
+
+Requires the daemon to be running. Returns immediately after writing the file.
