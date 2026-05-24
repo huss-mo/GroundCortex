@@ -251,16 +251,28 @@ def _parse_qwen_tool_calls(response: str) -> list[dict] | None:
     if calls:
         return calls
 
-    # Function-tag format: <function=name>args_json_or_empty</function>
-    # Appears inside or outside <tool_call> blocks depending on model version.
+    # Function-tag format: <function=name>...</function>
+    # Arguments may be JSON or XML <parameter=name>value</parameter> blocks.
+    # The XML form is the default output of mlx-community Qwen3 quantised models.
     for name, args_raw in re.findall(
         r"<function=([^>]+)>(.*?)</function>", response, re.DOTALL
     ):
         args_raw = args_raw.strip()
-        try:
-            arguments = json.loads(args_raw) if args_raw else {}
-        except json.JSONDecodeError:
+        if "<parameter=" in args_raw:
             arguments = {}
+            for pname, pvalue in re.findall(
+                r"<parameter=([^>]+)>\s*(.*?)\s*</parameter>", args_raw, re.DOTALL
+            ):
+                pvalue = pvalue.strip()
+                try:
+                    arguments[pname.strip()] = json.loads(pvalue)
+                except json.JSONDecodeError:
+                    arguments[pname.strip()] = pvalue
+        else:
+            try:
+                arguments = json.loads(args_raw) if args_raw else {}
+            except json.JSONDecodeError:
+                arguments = {}
         calls.append({
             "id": f"call_{uuid.uuid4().hex[:8]}",
             "type": "function",

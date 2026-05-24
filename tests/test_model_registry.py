@@ -404,6 +404,57 @@ class TestParseToolCalls:
         assert result[0]["function"]["name"] == "search"
         assert json.loads(result[0]["function"]["arguments"]) == {"query": "weather"}
 
+    def test_xml_parameter_format_single_param(self):
+        # mlx-community quantised Qwen3 uses <parameter=name>value</parameter> format
+        response = (
+            "<tool_call>\n"
+            "<function=memory_read>\n"
+            "<parameter=file>\nMEMORY.md\n</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+        result = parse_tool_calls(response, self.QWEN)
+        assert result is not None
+        assert len(result) == 1
+        assert result[0]["function"]["name"] == "memory_read"
+        assert json.loads(result[0]["function"]["arguments"]) == {"file": "MEMORY.md"}
+
+    def test_xml_parameter_format_multiple_params(self):
+        response = (
+            "<tool_call>\n"
+            "<function=search_notes>\n"
+            "<parameter=query>\nproject updates\n</parameter>\n"
+            "<parameter=count>\n5\n</parameter>\n"
+            "</function>\n"
+            "</tool_call>"
+        )
+        result = parse_tool_calls(response, self.QWEN)
+        assert result is not None
+        args = json.loads(result[0]["function"]["arguments"])
+        assert args["query"] == "project updates"
+        assert args["count"] == 5  # numeric — parsed as int via json.loads
+
+    def test_xml_parameter_format_multiple_calls(self):
+        response = (
+            "<tool_call>\n<function=read_file>\n"
+            "<parameter=path>/tmp/a.txt</parameter>\n</function>\n</tool_call>\n"
+            "<tool_call>\n<function=read_file>\n"
+            "<parameter=path>/tmp/b.txt</parameter>\n</function>\n</tool_call>"
+        )
+        result = parse_tool_calls(response, self.QWEN)
+        assert result is not None
+        assert len(result) == 2
+        assert json.loads(result[0]["function"]["arguments"]) == {"path": "/tmp/a.txt"}
+        assert json.loads(result[1]["function"]["arguments"]) == {"path": "/tmp/b.txt"}
+
+    def test_xml_parameter_format_no_params_gives_empty_dict(self):
+        response = (
+            "<tool_call>\n<function=get_time>\n</function>\n</tool_call>"
+        )
+        result = parse_tool_calls(response, self.QWEN)
+        assert result is not None
+        assert json.loads(result[0]["function"]["arguments"]) == {}
+
 
 class TestParseToolCallsGemma:
     GEMMA = "google/gemma-4-E4B-it"
