@@ -113,12 +113,34 @@ class MLXInferenceManager:
             **template_kwargs,
         )
 
-    def _sampler_kwargs(self, max_new_tokens, temperature):
+    def _sampler_kwargs(self, max_new_tokens, temperature, top_p=None, top_k=None,
+                        min_p=None, repetition_penalty=None):
         from mlx_lm.sample_utils import make_sampler
         # mlx_lm requires an int; None means "no client cap" → use a large finite value
         kwargs = {"max_tokens": max_new_tokens if max_new_tokens is not None else 32768}
+
+        sampler_kwargs = {}
         if temperature is not None and temperature > 0:
-            kwargs["sampler"] = make_sampler(temp=temperature)
+            sampler_kwargs["temp"] = temperature
+        if top_p is not None:
+            sampler_kwargs["top_p"] = top_p
+        if top_k is not None:
+            sampler_kwargs["top_k"] = top_k
+        if min_p is not None:
+            sampler_kwargs["min_p"] = min_p
+        if sampler_kwargs:
+            kwargs["sampler"] = make_sampler(**sampler_kwargs)
+
+        if repetition_penalty is not None:
+            try:
+                from mlx_lm.sample_utils import make_repetition_penalty
+                kwargs["logits_processors"] = [make_repetition_penalty(repetition_penalty)]
+            except ImportError:
+                logger.warning(
+                    "mlx_lm.sample_utils.make_repetition_penalty not available; "
+                    "repetition_penalty ignored"
+                )
+
         return kwargs
 
     def generate(
@@ -128,6 +150,11 @@ class MLXInferenceManager:
         temperature: float | None = None,
         tools: list[dict] | None = None,
         enable_thinking: bool = False,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        repetition_penalty: float | None = None,
+        frequency_penalty: float | None = None,  # not supported by mlx_lm; silently ignored
     ) -> str:
         """Generate a complete response for the given chat messages."""
         import mlx_lm
@@ -138,7 +165,8 @@ class MLXInferenceManager:
         prompt = self._build_prompt(messages, tools, enable_thinking)
         result = mlx_lm.generate(
             self._model, self._tokenizer, prompt=prompt,
-            **self._sampler_kwargs(max_new_tokens, temperature),
+            **self._sampler_kwargs(max_new_tokens, temperature, top_p, top_k, min_p,
+                                   repetition_penalty),
         )
         # mlx_lm strips <think> (a special token) but keeps </think>.
         # Restore the opening tag so clients receive a well-formed block.
@@ -153,6 +181,11 @@ class MLXInferenceManager:
         temperature: float | None = None,
         tools: list[dict] | None = None,
         enable_thinking: bool = False,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        repetition_penalty: float | None = None,
+        frequency_penalty: float | None = None,  # not supported by mlx_lm; silently ignored
     ):
         """Yield generated text one chunk at a time using mlx_lm.stream_generate."""
         import mlx_lm
@@ -164,7 +197,8 @@ class MLXInferenceManager:
         first = True
         for response in mlx_lm.stream_generate(
             self._model, self._tokenizer, prompt=prompt,
-            **self._sampler_kwargs(max_new_tokens, temperature),
+            **self._sampler_kwargs(max_new_tokens, temperature, top_p, top_k, min_p,
+                                   repetition_penalty),
         ):
             if first and enable_thinking and not response.text.startswith("<think>"):
                 yield "<think>\n"

@@ -176,3 +176,56 @@ class TestEnableThinking:
         m = self._make_manager("meta-llama/Llama-3-8B")
         kwargs = self._captured_template_kwargs(m, enable_thinking=True)
         assert "enable_thinking" not in kwargs
+
+
+# ---------------------------------------------------------------------------
+# Sampling parameters wired to model.generate
+# ---------------------------------------------------------------------------
+
+class TestSamplingParams:
+    def _make_manager(self) -> tuple:
+        cfg = MagicMock()
+        cfg.model_name = "test-model"
+        m = InferenceManager(cfg)
+        mock_model = _attach_mock_model(m)
+        return m, mock_model
+
+    def _gen_kwargs(self, manager, mock_model, **kwargs) -> dict:
+        manager.generate([{"role": "user", "content": "hi"}], **kwargs)
+        return mock_model.generate.call_args.kwargs
+
+    def test_top_p_in_gen_kwargs(self):
+        m, model = self._make_manager()
+        kw = self._gen_kwargs(m, model, temperature=0.8, top_p=0.9)
+        assert kw["top_p"] == 0.9
+
+    def test_top_k_in_gen_kwargs(self):
+        m, model = self._make_manager()
+        kw = self._gen_kwargs(m, model, temperature=0.8, top_k=40)
+        assert kw["top_k"] == 40
+
+    def test_min_p_in_gen_kwargs(self):
+        m, model = self._make_manager()
+        kw = self._gen_kwargs(m, model, temperature=0.8, min_p=0.05)
+        assert kw["min_p"] == 0.05
+
+    def test_repetition_penalty_in_gen_kwargs(self):
+        m, model = self._make_manager()
+        kw = self._gen_kwargs(m, model, repetition_penalty=1.1)
+        assert kw["repetition_penalty"] == 1.1
+
+    def test_frequency_penalty_in_gen_kwargs(self):
+        m, model = self._make_manager()
+        kw = self._gen_kwargs(m, model, frequency_penalty=0.2)
+        assert kw["frequency_penalty"] == 0.2
+
+    def test_do_sample_true_when_top_p_set_without_temperature(self):
+        m, model = self._make_manager()
+        kw = self._gen_kwargs(m, model, top_p=0.9)
+        assert kw["do_sample"] is True
+
+    def test_none_params_absent_from_gen_kwargs(self):
+        m, model = self._make_manager()
+        kw = self._gen_kwargs(m, model)  # no sampling params
+        for param in ("top_p", "top_k", "min_p", "repetition_penalty", "frequency_penalty"):
+            assert param not in kw, f"{param} should not be in gen_kwargs when None"

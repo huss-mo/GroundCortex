@@ -105,6 +105,11 @@ class InferenceManager:
         temperature: float | None = None,
         tools: list[dict] | None = None,
         enable_thinking: bool = False,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        repetition_penalty: float | None = None,
+        frequency_penalty: float | None = None,
     ) -> str:
         tokenizer = self._tokenizer
         template_kwargs = get_apply_chat_template_kwargs(self._config.model_name)
@@ -119,13 +124,27 @@ class InferenceManager:
         )
         inputs = tokenizer(text, return_tensors="pt").to(self._device)
 
-        do_sample = temperature is not None and temperature > 0
+        # Any sampling param implies stochastic decoding; not just temperature.
+        do_sample = bool(
+            (temperature is not None and temperature > 0)
+            or top_p is not None or top_k is not None or min_p is not None
+        )
         gen_kwargs: dict = {
             "max_new_tokens": max_new_tokens if max_new_tokens is not None else 32768,
             "do_sample": do_sample,
         }
-        if do_sample:
+        if temperature is not None and temperature > 0:
             gen_kwargs["temperature"] = temperature
+        if top_p is not None:
+            gen_kwargs["top_p"] = top_p
+        if top_k is not None:
+            gen_kwargs["top_k"] = top_k
+        if min_p is not None:
+            gen_kwargs["min_p"] = min_p
+        if repetition_penalty is not None:
+            gen_kwargs["repetition_penalty"] = repetition_penalty
+        if frequency_penalty is not None:
+            gen_kwargs["frequency_penalty"] = frequency_penalty
 
         with torch.no_grad():
             outputs = model.generate(**inputs, **gen_kwargs)
@@ -143,6 +162,11 @@ class InferenceManager:
         temperature: float | None = None,
         tools: list[dict] | None = None,
         enable_thinking: bool = False,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        repetition_penalty: float | None = None,
+        frequency_penalty: float | None = None,
     ) -> str:
         """Generate a complete response for the given chat messages.
 
@@ -151,8 +175,12 @@ class InferenceManager:
         model = self._model if self._model is not None else self._base_model
         if model is None:
             raise RuntimeError("Call load_base() before generate().")
-        return self._run_generate(model, messages, max_new_tokens, temperature,
-                                  tools=tools, enable_thinking=enable_thinking)
+        return self._run_generate(
+            model, messages, max_new_tokens, temperature,
+            tools=tools, enable_thinking=enable_thinking,
+            top_p=top_p, top_k=top_k, min_p=min_p,
+            repetition_penalty=repetition_penalty, frequency_penalty=frequency_penalty,
+        )
 
     def generate_stream(
         self,
@@ -161,6 +189,11 @@ class InferenceManager:
         temperature: float | None = None,
         tools: list[dict] | None = None,
         enable_thinking: bool = False,
+        top_p: float | None = None,
+        top_k: int | None = None,
+        min_p: float | None = None,
+        repetition_penalty: float | None = None,
+        frequency_penalty: float | None = None,
     ):
         """Yield generated text one chunk at a time using TextIteratorStreamer."""
         import threading
@@ -185,11 +218,24 @@ class InferenceManager:
 
         streamer = TextIteratorStreamer(tokenizer, skip_prompt=True, skip_special_tokens=True)
 
-        do_sample = temperature is not None and temperature > 0
-        gen_kwargs = {**inputs, "max_new_tokens": max_new_tokens, "do_sample": do_sample,
-                      "streamer": streamer}
-        if do_sample:
+        do_sample = bool(
+            (temperature is not None and temperature > 0)
+            or top_p is not None or top_k is not None or min_p is not None
+        )
+        gen_kwargs = {**inputs, "max_new_tokens": max_new_tokens if max_new_tokens is not None else 32768,
+                      "do_sample": do_sample, "streamer": streamer}
+        if temperature is not None and temperature > 0:
             gen_kwargs["temperature"] = temperature
+        if top_p is not None:
+            gen_kwargs["top_p"] = top_p
+        if top_k is not None:
+            gen_kwargs["top_k"] = top_k
+        if min_p is not None:
+            gen_kwargs["min_p"] = min_p
+        if repetition_penalty is not None:
+            gen_kwargs["repetition_penalty"] = repetition_penalty
+        if frequency_penalty is not None:
+            gen_kwargs["frequency_penalty"] = frequency_penalty
 
         thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
         thread.start()

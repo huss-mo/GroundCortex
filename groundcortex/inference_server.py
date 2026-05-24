@@ -70,6 +70,11 @@ class ChatCompletionRequest(BaseModel):
     tool_choice: str | None = None
     reasoning_effort: str | None = None  # "none" | "low" | "medium" | "high"
     enable_thinking: bool = False        # direct override; also set by reasoning_effort
+    top_p: float | None = None
+    top_k: int | None = None
+    min_p: float | None = None
+    repetition_penalty: float | None = None
+    frequency_penalty: float | None = None  # MLX: silently ignored
 
     @model_validator(mode="after")
     def _resolve_thinking(self) -> "ChatCompletionRequest":
@@ -140,6 +145,9 @@ async def chat_completions(request: ChatCompletionRequest):
             messages=messages, max_new_tokens=request.max_tokens,
             temperature=request.temperature, tools=request.tools,
             enable_thinking=request.enable_thinking,
+            top_p=request.top_p, top_k=request.top_k, min_p=request.min_p,
+            repetition_penalty=request.repetition_penalty,
+            frequency_penalty=request.frequency_penalty,
         )
         loop = asyncio.get_running_loop()
 
@@ -208,6 +216,9 @@ async def chat_completions(request: ChatCompletionRequest):
         messages=messages, max_new_tokens=request.max_tokens,
         temperature=request.temperature, tools=request.tools,
         enable_thinking=request.enable_thinking,
+        top_p=request.top_p, top_k=request.top_k, min_p=request.min_p,
+        repetition_penalty=request.repetition_penalty,
+        frequency_penalty=request.frequency_penalty,
     )
     tool_calls = parse_tool_calls(response_text, _config.model_name) if request.tools else None
 

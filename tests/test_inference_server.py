@@ -655,3 +655,74 @@ class TestRequestLogging:
         req_id = next(e["data"]["id"] for e in events if e["event"] == "REQUEST")
         resp_id = next(e["data"]["id"] for e in events if e["event"] == "RESPONSE")
         assert req_id == resp_id
+
+
+# ---------------------------------------------------------------------------
+# Sampling parameters pass-through
+# ---------------------------------------------------------------------------
+
+def _setup_sampling_test(response="Hello."):
+    mgr = _manager(response=response)
+    server_mod._inference_manager = mgr
+    server_mod._config = _config_with_key()
+    return mgr
+
+
+class TestSamplingParams:
+    def _post(self, payload: dict):
+        base = {"messages": [{"role": "user", "content": "Hi"}]}
+        return TestClient(app).post("/v1/chat/completions", json={**base, **payload})
+
+    def test_top_p_forwarded_to_generate(self):
+        mgr = _setup_sampling_test()
+        self._post({"top_p": 0.9})
+        assert mgr.generate.call_args.kwargs["top_p"] == 0.9
+
+    def test_top_k_forwarded_to_generate(self):
+        mgr = _setup_sampling_test()
+        self._post({"top_k": 40})
+        assert mgr.generate.call_args.kwargs["top_k"] == 40
+
+    def test_min_p_forwarded_to_generate(self):
+        mgr = _setup_sampling_test()
+        self._post({"min_p": 0.05})
+        assert mgr.generate.call_args.kwargs["min_p"] == 0.05
+
+    def test_repetition_penalty_forwarded_to_generate(self):
+        mgr = _setup_sampling_test()
+        self._post({"repetition_penalty": 1.1})
+        assert mgr.generate.call_args.kwargs["repetition_penalty"] == 1.1
+
+    def test_frequency_penalty_forwarded_to_generate(self):
+        mgr = _setup_sampling_test()
+        self._post({"frequency_penalty": 0.2})
+        assert mgr.generate.call_args.kwargs["frequency_penalty"] == 0.2
+
+    def test_omitted_params_default_to_none(self):
+        mgr = _setup_sampling_test()
+        self._post({})
+        kw = mgr.generate.call_args.kwargs
+        for param in ("top_p", "top_k", "min_p", "repetition_penalty", "frequency_penalty"):
+            assert kw[param] is None, f"expected {param}=None, got {kw[param]}"
+
+    def test_sampling_params_forwarded_in_streaming(self):
+        mgr = _setup_sampling_test()
+        mgr.generate_stream.return_value = iter(["Hello"])
+        TestClient(app).post(
+            "/v1/chat/completions",
+            json={
+                "messages": [{"role": "user", "content": "Hi"}],
+                "stream": True,
+                "top_p": 0.85,
+                "top_k": 20,
+                "min_p": 0.01,
+                "repetition_penalty": 1.2,
+                "frequency_penalty": 0.3,
+            },
+        )
+        kw = mgr.generate_stream.call_args.kwargs
+        assert kw["top_p"] == 0.85
+        assert kw["top_k"] == 20
+        assert kw["min_p"] == 0.01
+        assert kw["repetition_penalty"] == 1.2
+        assert kw["frequency_penalty"] == 0.3

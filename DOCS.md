@@ -737,6 +737,27 @@ Response when a tool is called:
 `apply_chat_template` but their output is returned as plain text - the `tool_calls` field will
 not be populated.
 
+### Inference Parameters
+
+The endpoint accepts standard OpenAI sampling parameters. Support depends on which backend is active:
+
+| Parameter | Type | MLX (Apple Silicon) | Transformers (CUDA/CPU) | Notes |
+|---|---|---|---|---|
+| `temperature` | float | ✓ | ✓ | Values ≤ 0 are treated as greedy decoding |
+| `max_tokens` | int | ✓ | ✓ | Defaults to 32768 when omitted |
+| `top_p` | float | ✓ | ✓ | Nucleus sampling threshold |
+| `top_k` | int | ✓ | ✓ | Top-K token candidates |
+| `min_p` | float | ✓ | ✓ (transformers ≥ 4.45) | Minimum probability threshold |
+| `repetition_penalty` | float | ✓ | ✓ | Values > 1.0 penalise repetition; requires mlx-lm ≥ 0.21 on MLX |
+| `frequency_penalty` | float | ✗ silently ignored | ✓ (transformers ≥ 4.50) | Not supported by mlx-lm |
+| `reasoning_effort` | string | ✓ | ✓ | `"none"` / `"low"` / `"medium"` / `"high"` - enables chain-of-thought for Qwen3 models |
+| `enable_thinking` | bool | ✓ | ✓ | Direct override for thinking mode; also set by `reasoning_effort` |
+
+**Notes:**
+
+- Setting any of `top_p`, `top_k`, or `min_p` on the transformers path automatically enables stochastic sampling (`do_sample=True`) even if `temperature` is not provided.
+- Parameters not listed above (e.g. `stream_options`, `presence_penalty`) are accepted by the server but silently dropped.
+
 ### Switching Adapters
 
 Requesting a specific version ID in `POST /v1/chat/completions` activates that adapter for all subsequent requests - it is a persistent switch, not per-request routing.
@@ -816,7 +837,7 @@ python examples/run_pipeline.py
 
 `GroundCortexConfig` is a Pydantic Settings model (`groundcortex/config/__init__.py`). It reads from `~/.groundcortex/.env` and then `.env` in the working directory (cwd wins). All settings are validated on startup. `output_dir` is created automatically if it does not exist.
 
-`_get_root_dir()` reads `GROUNDCORTEX_ROOT_DIR` directly from the OS environment before the Pydantic model loads — this is necessary to locate the `.env` file itself. `output_dir` and `buffer_db` default to `$ROOT_DIR/adapters` and `$ROOT_DIR/groundcortex.db` respectively when not set.
+`_get_root_dir()` reads `GROUNDCORTEX_ROOT_DIR` directly from the OS environment before the Pydantic model loads - this is necessary to locate the `.env` file itself. `output_dir` and `buffer_db` default to `$ROOT_DIR/adapters` and `$ROOT_DIR/groundcortex.db` respectively when not set.
 
 Field validators handle comma-separated list parsing for `source_paths`, `remote_source_urls`, and `mcp_exposed_tools` - this is how `.env` file values are split into Python lists. Environment variables set as OS env vars (not via `.env` file) must use JSON array format for list fields: `["path1","path2"]`.
 

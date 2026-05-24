@@ -216,3 +216,80 @@ def test_offload_clears_state(config):
     assert mgr._lora_applied is False
     assert mgr.is_training is True
     assert mgr.is_ready is False
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Sampling parameters wired through _sampler_kwargs
+# ──────────────────────────────────────────────────────────────────────────────
+
+
+class TestSamplingParams:
+    def _manager(self, config) -> MLXInferenceManager:
+        mgr = MLXInferenceManager(config)
+        _attach_mock_model(mgr)
+        return mgr
+
+    def _sampler_kwargs(self, config, **kwargs) -> dict:
+        mgr = self._manager(config)
+        with patch("mlx_lm.sample_utils.make_sampler", return_value="mock_sampler") as mock_sampler:
+            result = mgr._sampler_kwargs(
+                kwargs.pop("max_new_tokens", None),
+                kwargs.pop("temperature", None),
+                **kwargs,
+            )
+        return result, mock_sampler
+
+    def test_top_p_passed_to_make_sampler(self, config):
+        result, mock_sampler = self._sampler_kwargs(config, top_p=0.9)
+        mock_sampler.assert_called_once()
+        assert mock_sampler.call_args.kwargs.get("top_p") == 0.9
+
+    def test_top_k_passed_to_make_sampler(self, config):
+        result, mock_sampler = self._sampler_kwargs(config, top_k=40)
+        mock_sampler.assert_called_once()
+        assert mock_sampler.call_args.kwargs.get("top_k") == 40
+
+    def test_min_p_passed_to_make_sampler(self, config):
+        result, mock_sampler = self._sampler_kwargs(config, min_p=0.05)
+        mock_sampler.assert_called_once()
+        assert mock_sampler.call_args.kwargs.get("min_p") == 0.05
+
+    def test_all_sampler_kwargs_combined(self, config):
+        result, mock_sampler = self._sampler_kwargs(
+            config, temperature=0.8, top_p=0.9, top_k=40, min_p=0.05
+        )
+        kw = mock_sampler.call_args.kwargs
+        assert kw["temp"] == 0.8
+        assert kw["top_p"] == 0.9
+        assert kw["top_k"] == 40
+        assert kw["min_p"] == 0.05
+
+    def test_repetition_penalty_creates_logits_processor(self, config):
+        mgr = self._manager(config)
+        mock_processor = MagicMock()
+        with patch("mlx_lm.sample_utils.make_sampler", return_value="s"), \
+             patch("mlx_lm.sample_utils.make_repetition_penalty", return_value=mock_processor):
+            result = mgr._sampler_kwargs(None, None, repetition_penalty=1.2)
+        assert "logits_processors" in result
+        assert result["logits_processors"] == [mock_processor]
+
+    def test_frequency_penalty_silently_ignored(self, config):
+        mgr = self._manager(config)
+        mgr._tokenizer.apply_chat_template.return_value = "<prompt>"
+        with patch("mlx_lm.generate", return_value="ok") as mock_gen, \
+             patch("mlx_lm.sample_utils.make_sampler", return_value="s"):
+            # Should not raise; frequency_penalty must not appear in the mlx_lm.generate call.
+            result = mgr.generate(
+                [{"role": "user", "content": "hi"}],
+                frequency_penalty=0.3,
+            )
+        call_kwargs = mock_gen.call_args.kwargs if mock_gen.call_args.kwargs else {}
+        all_kwargs = {**call_kwargs}
+        assert "frequency_penalty" not in all_kwargs
+
+    def test_no_sampler_key_when_all_none(self, config):
+        mgr = self._manager(config)
+        with patch("mlx_lm.sample_utils.make_sampler") as mock_sampler:
+            result = mgr._sampler_kwargs(None, None)
+        mock_sampler.assert_not_called()
+        assert "sampler" not in result
