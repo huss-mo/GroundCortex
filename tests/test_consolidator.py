@@ -370,7 +370,7 @@ class TestQualityGate:
         _add_pending(db)
         adapter = str(tmp_path / "adapters" / "v1")
         patch_ctx, _ = _patch_trainer(adapter)
-        # eval crashes immediately — run should be left at "evaluating" in DB
+        # eval crashes immediately - run should be left at "evaluating" in DB
         mock_manager = MagicMock()
         mock_manager.is_ready = True
         mock_manager.list_loaded_adapters.return_value = []

@@ -259,11 +259,14 @@ def _cli_train(config) -> None:
 
     req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
-            json.loads(resp.read())
-        print("Training started.")
-        print(f"Monitor: groundcortex --status")
-        print(f"Logs   : {_log_file(config)}")
+        with urllib.request.urlopen(req, timeout=7200) as resp:
+            result = json.loads(resp.read())
+        status = result.get("status", "unknown")
+        print(f"Training {status}.")
+        if result.get("metrics"):
+            m = result["metrics"]
+            print(f"  recall={m.get('recall_pct', 0):.0%}  sanity={m.get('sanity_pct', 0):.0%}")
+        print(f"Logs: {_log_file(config)}")
     except urllib.error.HTTPError as exc:
         raw = exc.read()
         try:

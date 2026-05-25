@@ -147,6 +147,62 @@ to the base weights. Scales are restored after judging. This requires no additio
 
 ---
 
+## Experiment 3 - Production Pipeline (GroundCortex server, 35B MoE, LLM-generated training data)
+
+**Use case:** continuous fine-tuning via the GroundCortex server on LLM-generated Q&A pairs
+derived from ingested content. Same base model and hardware as Experiment 2, but training data
+is produced by the pipeline generator rather than hand-authored.
+
+### Configuration (validated)
+
+| Parameter | Value |
+|---|---|
+| `MODEL_NAME` | `mlx-community/Qwen3.6-35B-A3B-4bit` |
+| `USE_QLORA` | `True` |
+| `RANK` | `16` |
+| `ALPHA` | `32` |
+| `LEARNING_RATE` | `1e-5` |
+| `NUM_EPOCHS` | `15` |
+| `BATCH_SIZE` | `2` |
+| `GRADIENT_ACCUMULATION` | `2` |
+| `NUM_LORA_LAYERS` | `8` |
+| Backend | mlx-lm int4 (Apple MLX) |
+| Device | Apple Silicon, 48 GB unified memory |
+
+### Results
+
+| Run | LR | Epochs | Recall | Sanity | Outcome |
+|---|---|---|---|---|---|
+| 1 | 5e-5 | 30 | 22% | 100% | no-pass |
+| 2 | 1e-5 | 20 | 44% | 94% | no-pass |
+| 3 | 5e-6 | 15 | 44% | 94% | no-pass |
+| 4 | 1e-5 | 15 | 56% | 96% | **pass** |
+
+### Key findings
+
+**Loss convergence timing is the critical variable, not whether loss reaches zero.**
+Loss hitting 0.000 is harmless when it happens in the last ~10% of iterations. In v8 (480
+total iterations), loss crossed into near-zero around iter 430–440 - leaving only ~40–50
+iterations of near-zero-gradient updates before training ended. Drift had no runway.
+
+The failure mode in run 1 (LR=5e-5, 30 epochs) was the opposite: loss hit 0 around epoch 3,
+then Adam drift ran for ~27 epochs at 5× the update magnitude of a 1e-5 run. Adam's momentum
+tensors carry the previous update direction; at zero gradient they continue pushing weights in
+that direction indefinitely, progressively overwriting learned associations. The result was 22%
+recall.
+
+Rule of thumb: **if the loss curve flattens near zero before roughly 80% of training is done,
+reduce LR or cut epochs.**
+
+**LR=1e-5 is the sweet spot for this model/dataset scale.**
+
+- `5e-5, 30 epochs`: convergence too early (~epoch 3), catastrophic drift → 22% recall
+- `1e-5, 20 epochs`: convergence before epoch 15, ~5 epochs of drift → 44% recall
+- `5e-6, 15 epochs`: converges too slowly, insufficient learning → 44% recall
+- `1e-5, 15 epochs`: convergence at ~epoch 14, minimal drift → 56% recall (best)
+
+---
+
 ## Parameter Comparison
 
 | Parameter | Experiment 1 (2B dense) | Experiment 2 (35B MoE) | Why they differ |

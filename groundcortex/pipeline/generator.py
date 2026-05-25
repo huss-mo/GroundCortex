@@ -17,6 +17,8 @@ _SYSTEM_PROMPT = (
     "You generate training question-answer pairs from factual content.\n"
     "Given a passage, output exactly 5 diverse Q&A pairs as a JSON array.\n"
     "Vary the phrasing, angle, and approach across questions.\n"
+    "Include at least one direct recall question, one reasoning or implication question,\n"
+    "and one scenario or comparative question.\n"
     "All answers must be grounded in the provided content - do not add information not present in the passage.\n"
     "Output only the JSON array, nothing else."
 )
@@ -49,16 +51,16 @@ _FEW_SHOT: list[dict] = [
                 "answer": "Light travels through a vacuum at approximately 299,792 kilometers per second.",
             },
             {
-                "question": "Is the speed of light in a vacuum exactly 299,792 km/s?",
-                "answer": "It is approximately 299,792 kilometers per second - this is a commonly cited rounded value.",
+                "question": "If a photon is emitted from a star, how quickly does it travel through the vacuum of space?",
+                "answer": "It travels at approximately 299,792 kilometers per second, the speed of light in a vacuum.",
             },
             {
-                "question": "If asked about the speed of light, what would you say?",
-                "answer": "The speed of light in a vacuum is approximately 299,792 kilometers per second.",
+                "question": "Why does the speed of light in a vacuum matter as a physical constant?",
+                "answer": "It is a fundamental limit - approximately 299,792 km/s - that governs how quickly information and energy can propagate through empty space.",
             },
             {
-                "question": "What is significant about 299,792 km/s?",
-                "answer": "It is the approximate speed of light in a vacuum - a fundamental physical constant.",
+                "question": "How does the speed of light in a vacuum compare to travel through other media?",
+                "answer": "299,792 km/s is the maximum speed, reached only in a vacuum; light slows down when passing through any material medium.",
             },
         ]),
     },
@@ -77,20 +79,20 @@ _FEW_SHOT: list[dict] = [
                 "answer": "Database indexes improve query performance by allowing the engine to locate rows without scanning the entire table.",
             },
             {
-                "question": "How do database indexes work?",
+                "question": "How do database indexes reduce query time?",
                 "answer": "A database index allows the query engine to locate rows directly without a full table scan, improving performance.",
             },
             {
-                "question": "Would a database query be faster with or without an index?",
-                "answer": "With an index. Indexes allow the engine to locate rows without scanning the entire table.",
+                "question": "If a table has millions of rows and no index on a frequently queried column, what is the likely performance consequence?",
+                "answer": "Every query on that column would require a full table scan, making performance degrade significantly compared to using an index.",
             },
             {
-                "question": "What problem do database indexes solve?",
-                "answer": "They eliminate the need for full table scans by allowing the query engine to locate relevant rows directly.",
+                "question": "How does the mechanism behind database indexes differ from scanning the entire table?",
+                "answer": "An index provides a direct lookup path to matching rows, whereas a full table scan reads every row sequentially regardless of relevance.",
             },
             {
-                "question": "Explain the role of indexes in database query performance.",
-                "answer": "Indexes allow the database engine to locate rows without scanning the entire table, which significantly improves query performance.",
+                "question": "What trade-off does adding a database index introduce?",
+                "answer": "Indexes speed up reads by avoiding full table scans, but they add overhead to writes since the index must be maintained on every insert or update.",
             },
         ]),
     },

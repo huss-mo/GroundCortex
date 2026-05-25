@@ -419,7 +419,7 @@ class TestGetEvaluatingRun:
 
 
 # ---------------------------------------------------------------------------
-# cleanup_interrupted_runs — evaluating status must be preserved
+# cleanup_interrupted_runs - evaluating status must be preserved
 # ---------------------------------------------------------------------------
 
 class TestCleanupInterruptedRuns:

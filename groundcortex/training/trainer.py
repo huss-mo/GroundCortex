@@ -157,6 +157,17 @@ class LoRATrainer:
         model.save_pretrained(adapter_dir)
         tokenizer.save_pretrained(adapter_dir)
 
+        # Explicitly free training model so GPU/MPS memory is released before
+        # load_base() loads the inference model for evaluation.
+        import gc
+        import torch
+        del model, tokenizer, trainer
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        elif torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+
         return adapter_dir
 
     def hyperparams_snapshot(self) -> dict:

@@ -41,7 +41,7 @@ async def run_consolidation(
     logger.info("Consolidation triggered by: %s", trigger)
 
     # 0. Resume any run stuck in "evaluating" (training completed but eval crashed).
-    #    Handle it exclusively — do not start new training in the same session.
+    #    Handle it exclusively - do not start new training in the same session.
     evaluating_run = db.get_evaluating_run()
     if evaluating_run is not None:
         version = evaluating_run.version
@@ -50,7 +50,7 @@ async def run_consolidation(
 
         if not adapter_path or not Path(adapter_path).exists():
             logger.warning(
-                "Adapter path missing for evaluating run %s — marking failed and proceeding "
+                "Adapter path missing for evaluating run %s - marking failed and proceeding "
                 "with normal consolidation.", version,
             )
             db.update_training_run(evaluating_run.id, status="failed",
