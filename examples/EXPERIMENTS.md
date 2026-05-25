@@ -86,7 +86,7 @@ answer unrelated questions within a few epochs.
 | Stage | Peak |
 |---|---|
 | Model load (int4, pre-quantized) | ~18 GB |
-| Training (8 layers, rank=16) | ~24 GB |
+| Training (8 layers, rank=16, ~257M trainable params) | ~24 GB |
 
 Must use a pre-quantized `mlx-community/*-4bit` model. Loading the bf16 weights and
 quantizing in-process requires holding both representations simultaneously (~70 GB for 35B),
@@ -111,15 +111,20 @@ the model is already in int4, so peak load is ~18 GB.
 The MoE structure creates conflicting gradient signal between the fact examples and the
 regularization examples at high LR; Adam momentum amplifies the divergence. LR=5e-5 avoids this.
 
-**8 LoRA layers, not all layers.** The 35B MoE has 40 layers with 64 experts each. At rank=16,
-applying LoRA to all layers creates ~256M trainable parameters. Adam stores 2 momentum tensors
-per parameter in float16 = several additional GB on top of the 18 GB model. This OOMs during
-optimizer init. 8 layers → ~128M parameters, peak Metal memory ~24 GB.
+**8 LoRA layers, not all layers.** The 35B MoE has 40 layers with 64 experts each. Because each
+transformer block contains 64 expert linear layers, the per-layer LoRA parameter count is much
+higher than a dense model. At rank=16, even 8 layers produces ~257M trainable parameters
+(measured); all 40 layers has not been benchmarked but would be proportionally larger (~1.3B
+estimated). Adam stores 2 momentum tensors per parameter in float16, so the optimizer state alone
+for all-layers training would push well past the 48 GB budget. Peak Metal memory at 8 layers:
+~24 GB.
 
-This limit also prevents catastrophic forgetting: with 30 epochs on 34 examples and
-~256M trainable params, the model reaches loss=0.000 by epoch 5 and then overwrites general
-capabilities over the remaining 25 epochs. With 8 layers and LR=5e-5, the loss stabilizes
-around 0.05 at the end without fully memorizing, preserving sanity at 4.0/5.0.
+This limit also prevents catastrophic forgetting: with 30 epochs on 34 examples and a large
+trainable parameter count relative to dataset size, the model reaches loss=0.000 early and then
+overwrites general capabilities over the remaining epochs. With 8 layers and LR=5e-5, the loss
+stabilizes around 0.05 at the end without fully memorizing, preserving sanity at 4.0/5.0.
+Note: the hypothesis test used a small, well-balanced dataset (facts + regularization examples);
+larger or less-balanced datasets may still overfit even with 8 layers.
 
 **LLM judge prompt framing.** "Expected: X / Response: Y / Does response convey same meaning?"
 causes the base model to fact-check rather than compare semantically - it knows Brisbane is not
@@ -152,6 +157,6 @@ to the base weights. Scales are restored after judging. This requires no additio
 | `LEARNING_RATE` | `5e-4` | `5e-5` | Higher LR diverges on MoE with conflicting gradients |
 | `NUM_EPOCHS` | `25` | `30` | More epochs needed; loss converges slower at lower LR |
 | `BATCH_SIZE` | `2` | `1` | Memory constraint on Apple Silicon |
-| `n_lora_layers` | all | 8 | OOM prevention (optimizer state) + catastrophic forgetting prevention (param count vs dataset size) |
+| `n_lora_layers` | all | 8 | OOM prevention: each MoE block has 64 expert layers; all 40 blocks estimated ~1.3B trainable params at rank=16, which OOMs. 8 blocks = ~257M params (measured), fits in 24 GB. |
 | `MAX_SEQ_LENGTH` | `512` | `256` | Reduces KV-cache memory during training |
 | Backend | TRL/PEFT fp16 | mlx-lm int4 | torchao has no MPS dispatch (garbage logits on MPS) |
