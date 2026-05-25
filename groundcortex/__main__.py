@@ -412,6 +412,17 @@ async def main() -> None:
     config = GroundCortexConfig()
     db = Database(config.buffer_db)
     db.backfill_model_name(config.model_name)
+
+    # Clean up any runs that were interrupted by a previous crash or forced stop.
+    interrupted_paths = db.cleanup_interrupted_runs()
+    for adapter_path in interrupted_paths:
+        import shutil
+        p = Path(adapter_path)
+        if p.exists():
+            shutil.rmtree(p, ignore_errors=True)
+            logger.info("Removed incomplete adapter dir: %s", p)
+        logger.info("Marked interrupted training run as failed: %s", adapter_path or "(no path)")
+
     inference_manager = create_manager(config)
 
     # ── Load base model ────────────────────────────────────────────────────────

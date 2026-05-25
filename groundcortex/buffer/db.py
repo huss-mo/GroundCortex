@@ -331,6 +331,18 @@ class Database:
                 for r in rows
             ]
 
+    def cleanup_interrupted_runs(self) -> list[str]:
+        """Mark any stuck 'training' rows as 'failed' and return their adapter paths for cleanup."""
+        with self._conn() as con:
+            rows = con.execute(
+                "SELECT id, adapter_path FROM training_runs WHERE status = 'training'"
+            ).fetchall()
+            if rows:
+                con.execute(
+                    "UPDATE training_runs SET status = 'failed' WHERE status = 'training'"
+                )
+        return [row["adapter_path"] for row in rows if row["adapter_path"]]
+
     def backfill_model_name(self, model_name: str) -> None:
         """Set model_name for rows that predate model tracking (model_name = '')."""
         with self._conn() as con:
