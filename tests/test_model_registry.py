@@ -432,7 +432,7 @@ class TestParseToolCalls:
         assert result is not None
         args = json.loads(result[0]["function"]["arguments"])
         assert args["query"] == "project updates"
-        assert args["count"] == 5  # numeric — parsed as int via json.loads
+        assert args["count"] == 5  # numeric - parsed as int via json.loads
 
     def test_xml_parameter_format_multiple_calls(self):
         response = (

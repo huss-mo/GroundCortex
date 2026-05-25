@@ -23,7 +23,7 @@ SOURCE_ID = "file:notes.md"
 
 
 # ---------------------------------------------------------------------------
-# Stage 1 — Heading split
+# Stage 1 - Heading split
 # ---------------------------------------------------------------------------
 
 class TestHeadingSplit:
@@ -108,7 +108,7 @@ class TestHeadingSplit:
 
 
 # ---------------------------------------------------------------------------
-# Stage 2 — Paragraph split
+# Stage 2 - Paragraph split
 # ---------------------------------------------------------------------------
 
 class TestParagraphSplit:
@@ -134,7 +134,7 @@ class TestParagraphSplit:
         assert len(result) == 2
 
     def test_short_fact_survives_at_25_threshold(self):
-        # "the owner hates long sentences" is 31 chars — above 25
+        # "the owner hates long sentences" is 31 chars - above 25
         body = "the owner hates long sentences"
         result = _split_on_paragraphs(body, "\n\n", 25)
         assert result == [body]
@@ -155,7 +155,7 @@ class TestParagraphSplit:
 
 
 # ---------------------------------------------------------------------------
-# Stage 3 — Word split
+# Stage 3 - Word split
 # ---------------------------------------------------------------------------
 
 class TestWordSplit:
@@ -233,7 +233,7 @@ class TestCascade:
 
     def test_full_cascade(self, tmp_path):
         long_para = " ".join(f"word{i}" for i in range(120))
-        # "This is a known fact." is 21 chars — set min_chars=0 to keep it
+        # "This is a known fact." is 21 chars - set min_chars=0 to keep it
         content = (
             "# Doc\n"
             "## Section A\n"

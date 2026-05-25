@@ -149,7 +149,7 @@ class TestRunDryRun:
         assert result["output_path"] == str(tmp_path / "dry-run.md")
 
     def test_does_not_write_to_db(self, tmp_path):
-        """run_dry_run takes no db arg — verify no DB file is created by the function."""
+        """run_dry_run takes no db arg - verify no DB file is created by the function."""
         from groundcortex.consolidator import run_dry_run
         src = tmp_path / "notes.md"
         src.write_text("A fact.", encoding="utf-8")

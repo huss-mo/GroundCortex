@@ -20,7 +20,7 @@ def _now_iso() -> str:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Stage 1 — Heading split
+# Stage 1 - Heading split
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _split_on_headings(content: str, depth: int) -> list[tuple[str, str]]:
@@ -63,7 +63,7 @@ def _split_on_headings(content: str, depth: int) -> list[tuple[str, str]]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Stage 2 — Paragraph split
+# Stage 2 - Paragraph split
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _split_on_paragraphs(body: str, splitter: str, min_chars: int) -> list[str]:
@@ -76,7 +76,7 @@ def _split_on_paragraphs(body: str, splitter: str, min_chars: int) -> list[str]:
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Stage 3 — Word split
+# Stage 3 - Word split
 # ──────────────────────────────────────────────────────────────────────────────
 
 def _split_on_words(text: str, size: int, overlap: int) -> list[str]:

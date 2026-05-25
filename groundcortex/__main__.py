@@ -311,7 +311,10 @@ def _cli_dry_run(config) -> None:
         sys.exit(1)
 
     if result.get("status") == "skipped":
-        print("No source files configured — nothing to preview.")
+        if result.get("reason") == "fetch_failed":
+            print("Error: sources are configured but all remote fetches failed. Check the server log for details.", file=sys.stderr)
+            sys.exit(1)
+        print("No source files configured - nothing to preview.")
     else:
         print(
             f"Dry-run complete: {result['total_chunks']} chunks, "

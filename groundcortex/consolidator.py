@@ -228,7 +228,7 @@ async def run_dry_run(
     inference_manager: "InferenceManager | None" = None,
 ) -> dict:
     """Preview what would be trained: read source files, split into chunks,
-    generate Q&A examples — zero DB interaction, no training.
+    generate Q&A examples - zero DB interaction, no training.
     """
     from groundcortex.ingestion.file_adapter import _split_sections
 
@@ -264,11 +264,13 @@ async def run_dry_run(
                             source=url, raw_content=chunk, entities=[],
                             content_hash="", status="pending", created_at=now,
                         ))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning("Dry-run: failed to fetch %s: %s", url, exc)
 
+    has_sources = bool(config.source_paths or config.remote_source_urls)
     if not preview_experiences:
-        return {"status": "skipped", "reason": "no_sources", "total_chunks": 0}
+        reason = "no_sources" if not has_sources else "fetch_failed"
+        return {"status": "skipped", "reason": reason, "total_chunks": 0}
 
     gen_fn = inference_manager.generate_base if inference_manager is not None else None
     generator = ExampleGenerator(gen_fn)
