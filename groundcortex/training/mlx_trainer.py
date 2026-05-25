@@ -8,8 +8,6 @@ from __future__ import annotations
 import math
 import os
 import types
-from datetime import datetime, timezone
-
 from datasets import Dataset
 
 from groundcortex.config import GroundCortexConfig
@@ -41,8 +39,7 @@ class MLXTrainer:
         if not already_quantized:
             model, _ = quantize_model(model, config={}, group_size=64, bits=4)
 
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
-        adapter_dir = str(cfg.output_dir / f"{version}_{timestamp}")
+        adapter_dir = str(cfg.output_dir / version)
         os.makedirs(adapter_dir, exist_ok=True)
 
         iters = math.ceil(len(dataset) / cfg.batch_size) * cfg.epochs

@@ -212,13 +212,19 @@ async def chat_completions(request: ChatCompletionRequest):
         return StreamingResponse(_stream_tokens(), media_type="text/event-stream")
 
     # ── Non-streaming ────────────────────────────────────────────────────────
-    response_text = _inference_manager.generate(
-        messages=messages, max_new_tokens=request.max_tokens,
-        temperature=request.temperature, tools=request.tools,
-        enable_thinking=request.enable_thinking,
-        top_p=request.top_p, top_k=request.top_k, min_p=request.min_p,
-        repetition_penalty=request.repetition_penalty,
-        frequency_penalty=request.frequency_penalty,
+    # Run generate() in a thread so the event loop stays free for other
+    # requests (e.g. /v1/control/train) while inference is in progress.
+    loop = asyncio.get_running_loop()
+    response_text = await loop.run_in_executor(
+        None,
+        lambda: _inference_manager.generate(
+            messages=messages, max_new_tokens=request.max_tokens,
+            temperature=request.temperature, tools=request.tools,
+            enable_thinking=request.enable_thinking,
+            top_p=request.top_p, top_k=request.top_k, min_p=request.min_p,
+            repetition_penalty=request.repetition_penalty,
+            frequency_penalty=request.frequency_penalty,
+        ),
     )
     tool_calls = parse_tool_calls(response_text, _config.model_name) if request.tools else None
 
