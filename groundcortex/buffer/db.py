@@ -245,6 +245,14 @@ class Database:
             ).fetchone()
             return self._row_to_run(row) if row else None
 
+    def get_evaluating_run(self) -> TrainingRun | None:
+        """Return the most recent run stuck in 'evaluating' status, or None."""
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT * FROM training_runs WHERE status = 'evaluating' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            return self._row_to_run(row) if row else None
+
     def get_run_by_version(self, version: str) -> TrainingRun | None:
         with self._conn() as con:
             row = con.execute(

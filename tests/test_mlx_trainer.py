@@ -78,6 +78,29 @@ def test_train_returns_adapter_dir(mock_train, config):
     mock_train.assert_called_once()
 
 
+def test_adapter_path_uses_version_only_no_timestamp(config, tmp_path):
+    """Adapter directory must be <output_dir>/<version> with no timestamp suffix."""
+    import re
+    config.use_qlora = True
+    config.output_dir = tmp_path / "adapters"
+    from datasets import Dataset
+    ds = Dataset.from_list(
+        [{"messages": [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]}]
+        * 2
+    )
+    mock_model = MagicMock()
+    mock_model.layers = [MagicMock()] * 4
+    with (
+        patch("mlx_lm.load", return_value=(mock_model, MagicMock())),
+        patch("mlx_lm.utils.quantize_model", return_value=(mock_model, {})),
+        patch("mlx_lm.lora.train_model"),
+        patch("mlx_lm.tuner.datasets.ChatDataset", return_value=MagicMock()),
+    ):
+        path = MLXTrainer(config).train(ds, "v3")
+    assert path == str(tmp_path / "adapters" / "v3")
+    assert not re.search(r"_\d{8}T\d{6}", path), "Timestamp suffix should not be present"
+
+
 def test_train_calls_train_model(config, tmp_path):
     """train() should call mlx_lm.lora.train_model with the right iters."""
     import math

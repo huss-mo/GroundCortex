@@ -79,12 +79,36 @@ def test_load_base_calls_mlx_load(config):
     with (
         patch("mlx_lm.load", return_value=(mock_model, mock_tokenizer)) as mock_load,
         patch("mlx_lm.utils.quantize_model", return_value=(mock_model, {})),
+        patch("mlx.core.clear_cache"),
     ):
         mgr.load_base()
 
     mock_load.assert_called_once_with(config.model_name)
     assert mgr.is_ready is True
     assert mgr.is_training is False
+
+
+def test_load_base_clears_mlx_cache_before_loading(config):
+    mock_model = MagicMock()
+    mgr = MLXInferenceManager(config)
+    call_order = []
+
+    def record_clear():
+        call_order.append("clear_cache")
+
+    def record_load(_model_name):
+        call_order.append("mlx_load")
+        return (mock_model, MagicMock())
+
+    with (
+        patch("mlx.core.clear_cache", side_effect=record_clear),
+        patch("mlx_lm.load", side_effect=record_load),
+        patch("mlx_lm.utils.quantize_model", return_value=(mock_model, {})),
+    ):
+        mgr.load_base()
+
+    assert call_order[0] == "clear_cache", "clear_cache must be called before mlx_lm.load"
+    assert call_order[1] == "mlx_load"
 
 
 # ──────────────────────────────────────────────────────────────────────────────

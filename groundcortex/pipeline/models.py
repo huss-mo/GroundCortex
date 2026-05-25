@@ -46,7 +46,7 @@ class TrainingRun(BaseModel):
     hyperparams: dict = Field(default_factory=dict)
     model_name: str                               # base model this adapter was trained on
     metrics: dict | None = None                   # {recall_pct, reasoning_pct, sanity_score}
-    status: Literal["training", "complete", "failed", "deleted", "no-pass"] = "training"
+    status: Literal["training", "evaluating", "complete", "failed", "deleted", "no-pass"] = "training"
     is_active: bool = False
     created_at: str = Field(default_factory=_now)
     completed_at: str | None = None

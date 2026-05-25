@@ -383,3 +383,68 @@ class TestModelTracking:
         db.create_training_run(_run(version="v1", model_name="model-a"))
         result = db.list_switchable_runs(model_name="model-b")
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# get_evaluating_run
+# ---------------------------------------------------------------------------
+
+class TestGetEvaluatingRun:
+    def test_returns_none_when_db_empty(self, db):
+        assert db.get_evaluating_run() is None
+
+    def test_returns_none_when_no_evaluating_runs(self, db):
+        db.create_training_run(_run(version="v1", status="complete"))
+        db.create_training_run(_run(version="v2", status="failed"))
+        assert db.get_evaluating_run() is None
+
+    def test_returns_evaluating_run(self, db):
+        db.create_training_run(_run(version="v1", status="evaluating"))
+        result = db.get_evaluating_run()
+        assert result is not None
+        assert result.version == "v1"
+        assert result.status == "evaluating"
+
+    def test_returns_most_recent_when_multiple(self, db):
+        db.create_training_run(_run(version="v1", status="evaluating"))
+        db.create_training_run(_run(version="v2", status="evaluating"))
+        result = db.get_evaluating_run()
+        assert result.version == "v2"
+
+    def test_ignores_other_statuses(self, db):
+        db.create_training_run(_run(version="v1", status="training"))
+        db.create_training_run(_run(version="v2", status="complete"))
+        db.create_training_run(_run(version="v3", status="failed"))
+        assert db.get_evaluating_run() is None
+
+
+# ---------------------------------------------------------------------------
+# cleanup_interrupted_runs — evaluating status must be preserved
+# ---------------------------------------------------------------------------
+
+class TestCleanupInterruptedRuns:
+    def test_marks_training_runs_as_failed(self, db):
+        db.create_training_run(_run(version="v1", status="training"))
+        db.cleanup_interrupted_runs()
+        assert db.get_run_by_version("v1").status == "failed"
+
+    def test_does_not_touch_evaluating_runs(self, db):
+        db.create_training_run(_run(version="v1", status="evaluating"))
+        db.cleanup_interrupted_runs()
+        assert db.get_run_by_version("v1").status == "evaluating"
+
+    def test_does_not_touch_complete_runs(self, db):
+        db.create_training_run(_run(version="v1", status="complete"))
+        db.cleanup_interrupted_runs()
+        assert db.get_run_by_version("v1").status == "complete"
+
+    def test_returns_adapter_paths_of_failed_runs(self, db):
+        db.create_training_run(_run(version="v1", status="training"))
+        paths = db.cleanup_interrupted_runs()
+        assert "/adapters/v1" in paths
+
+    def test_returns_empty_when_no_training_runs(self, db):
+        db.create_training_run(_run(version="v1", status="evaluating"))
+        db.create_training_run(_run(version="v2", status="complete"))
+        paths = db.cleanup_interrupted_runs()
+        assert paths == []

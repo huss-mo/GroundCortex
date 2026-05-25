@@ -7,7 +7,7 @@
 [![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue.svg)](https://www.python.org/downloads/)
 [![Release](https://github.com/huss-mo/GroundCortex/actions/workflows/pypi-publish.yml/badge.svg?event=push)](https://github.com/huss-mo/GroundCortex/actions/workflows/pypi-publish.yml)
 [![Unit Tests](https://github.com/huss-mo/GroundCortex/actions/workflows/unit-tests.yml/badge.svg)](https://github.com/huss-mo/GroundCortex/actions/workflows/unit-tests.yml)
-[![Test Suite](https://img.shields.io/badge/test%20suite-512%20tests-blue.svg)](#running-the-test-suite)
+[![Test Suite](https://img.shields.io/badge/test%20suite-534%20tests-blue.svg)](#running-the-test-suite)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 ![GitHub repo size](https://img.shields.io/github/repo-size/huss-mo/GroundCortex)
 ![GitHub language count](https://img.shields.io/github/languages/count/huss-mo/GroundCortex)

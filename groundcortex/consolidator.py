@@ -40,6 +40,69 @@ async def run_consolidation(
     """
     logger.info("Consolidation triggered by: %s", trigger)
 
+    # 0. Resume any run stuck in "evaluating" (training completed but eval crashed).
+    #    Handle it exclusively — do not start new training in the same session.
+    evaluating_run = db.get_evaluating_run()
+    if evaluating_run is not None:
+        version = evaluating_run.version
+        adapter_path = evaluating_run.adapter_path
+        logger.info("Resuming evaluation for run %s (trigger: %s)", version, trigger)
+
+        if not adapter_path or not Path(adapter_path).exists():
+            logger.warning(
+                "Adapter path missing for evaluating run %s — marking failed and proceeding "
+                "with normal consolidation.", version,
+            )
+            db.update_training_run(evaluating_run.id, status="failed",
+                                   completed_at=datetime.now(timezone.utc).isoformat())
+            # Fall through to normal consolidation below.
+        else:
+            loop = asyncio.get_running_loop()
+            if inference_manager is not None:
+                if not inference_manager.is_ready:
+                    await loop.run_in_executor(None, inference_manager.load_base)
+                loaded = inference_manager.list_loaded_adapters()
+                if version not in loaded:
+                    inference_manager.load_adapter(adapter_path, version)
+                inference_manager.set_active(version)
+
+            eval_metrics: dict | None = None
+            if inference_manager is not None and config.eval_enabled:
+                from groundcortex.evaluation.evaluator import evaluate_adapter
+                try:
+                    eval_result = await loop.run_in_executor(
+                        None, evaluate_adapter,
+                        adapter_path, version, evaluating_run.experience_ids,
+                        db, inference_manager, config,
+                    )
+                    eval_metrics = eval_result.as_dict()
+                except Exception as exc:
+                    # Leave status as "evaluating" so the next --train call retries.
+                    logger.exception("Resumed evaluation crashed: %s", exc)
+                    return {"status": "failed", "resumed": True, "version": version,
+                            "error": str(exc)}
+
+                if not eval_result.passed:
+                    db.update_training_run(evaluating_run.id, status="no-pass",
+                                           metrics=eval_metrics,
+                                           completed_at=datetime.now(timezone.utc).isoformat())
+                    logger.warning("Resumed adapter %s did not pass quality gate.", version)
+                    return {"status": "no-pass", "resumed": True, "version": version,
+                            "metrics": eval_metrics, "adapter_path": adapter_path}
+
+            db.update_training_run(evaluating_run.id, status="complete",
+                                   metrics=eval_metrics,
+                                   completed_at=datetime.now(timezone.utc).isoformat())
+            db.set_active_run(evaluating_run.id)
+            if inference_manager is not None:
+                loaded = inference_manager.list_loaded_adapters()
+                if version not in loaded:
+                    inference_manager.load_adapter(adapter_path, version)
+                inference_manager.set_active(version)
+            logger.info("Resumed consolidation complete. Adapter %s now active.", version)
+            return {"status": "complete", "resumed": True, "version": version,
+                    "metrics": eval_metrics, "adapter_path": adapter_path}
+
     # 1. Run all ingestion adapters
     file_adapter = FileAdapter(config, db)
     new_from_files = file_adapter.ingest()
@@ -121,9 +184,12 @@ async def run_consolidation(
                     logger.warning("Could not restore previous adapter after training failure.")
         return {"status": "failed", "error": str(exc)}
 
-    # 5. Mark pending experiences trained now that training succeeded
+    # 5. Mark pending experiences trained and advance status to "evaluating".
+    #    From this point on, a crash leaves status="evaluating" so the next
+    #    --train call resumes evaluation rather than re-training from scratch.
     pending_ids = [exp.id for exp in scope if exp.status == "pending"]
     db.mark_trained(pending_ids, run.id)
+    db.update_training_run(run.id, status="evaluating", adapter_path=adapter_path)
 
     # 6. Reload base model (if it was offloaded) - needed for both evaluation and inference
     if inference_manager is not None and config.offload_during_training:
@@ -133,11 +199,16 @@ async def run_consolidation(
     eval_metrics: dict | None = None
     if inference_manager is not None and config.eval_enabled:
         from groundcortex.evaluation.evaluator import evaluate_adapter
-        eval_result = await loop.run_in_executor(
-            None, evaluate_adapter,
-            adapter_path, version, run.experience_ids,
-            db, inference_manager, config,
-        )
+        try:
+            eval_result = await loop.run_in_executor(
+                None, evaluate_adapter,
+                adapter_path, version, run.experience_ids,
+                db, inference_manager, config,
+            )
+        except Exception as exc:
+            logger.exception("Evaluation crashed: %s", exc)
+            return {"status": "failed", "version": version, "error": str(exc),
+                    "adapter_path": adapter_path}
         eval_metrics = eval_result.as_dict()
 
         if not eval_result.passed:
