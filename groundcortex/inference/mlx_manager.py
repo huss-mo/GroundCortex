@@ -41,8 +41,14 @@ class MLXInferenceManager:
 
     def load_base(self) -> None:
         """Load and quantize the base model. Call once at startup."""
+        import mlx.core as mx
         import mlx_lm
         from mlx_lm.utils import quantize_model
+
+        # Release any residual Metal buffers from a previous training run before
+        # loading the inference model, otherwise both copies briefly coexist in
+        # memory and can push past the 48 GB unified memory limit.
+        mx.clear_cache()
 
         self._is_training = False
         cfg = self._config
