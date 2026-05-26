@@ -259,14 +259,15 @@ def _cli_train(config) -> None:
 
     req = urllib.request.Request(url, data=b"{}", headers=headers, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=7200) as resp:
+        with urllib.request.urlopen(req, timeout=10) as resp:
             result = json.loads(resp.read())
         status = result.get("status", "unknown")
-        print(f"Training {status}.")
-        if result.get("metrics"):
-            m = result["metrics"]
-            print(f"  recall={m.get('recall_pct', 0):.0%}  sanity={m.get('sanity_pct', 0):.0%}")
-        print(f"Logs: {_log_file(config)}")
+        if status == "started":
+            print("Training started.")
+            print("Monitor: groundcortex --status")
+            print(f"Logs:    {_log_file(config)}")
+        else:
+            print(f"Unexpected response: {result}")
     except urllib.error.HTTPError as exc:
         raw = exc.read()
         try:
@@ -281,6 +282,80 @@ def _cli_train(config) -> None:
             file=sys.stderr,
         )
         sys.exit(1)
+
+
+def _cli_clean(config) -> None:
+    import shutil
+
+    if _port_open(config.inference_host, config.inference_port):
+        print(
+            "Error: Server is running. Stop it first with: groundcortex --stop",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+    db = Database(config.buffer_db)
+
+    # Mark legacy training_runs stuck in transient states as failed
+    legacy_failed = 0
+    with db._conn() as con:
+        rows = con.execute(
+            "SELECT id FROM training_runs WHERE status IN ('training', 'evaluating')"
+        ).fetchall()
+        if rows:
+            con.execute(
+                "UPDATE training_runs SET status = 'failed' WHERE status IN ('training', 'evaluating')"
+            )
+            legacy_failed = len(rows)
+
+    # Mark sweep_runs stuck in 'running' as failed (evaluating ones are left for resume)
+    sweep_runs_failed = 0
+    with db._conn() as con:
+        rows = con.execute(
+            "SELECT id FROM sweep_runs WHERE status = 'running'"
+        ).fetchall()
+        if rows:
+            con.execute("UPDATE sweep_runs SET status = 'failed' WHERE status = 'running'")
+            sweep_runs_failed = len(rows)
+
+    # Mark open sweeps as failed
+    sweeps_failed = 0
+    with db._conn() as con:
+        rows = con.execute("SELECT id FROM sweeps WHERE status = 'running'").fetchall()
+        if rows:
+            con.execute("UPDATE sweeps SET status = 'failed' WHERE status = 'running'")
+            sweeps_failed = len(rows)
+
+    # Remove adapter dirs for failed/deleted training_runs (except active)
+    dirs_removed = 0
+    active_run = db.get_active_run()
+    active_path = active_run.adapter_path if active_run else None
+    with db._conn() as con:
+        rows = con.execute(
+            "SELECT adapter_path FROM training_runs WHERE status IN ('failed', 'deleted') AND adapter_path != ''"
+        ).fetchall()
+    for row in rows:
+        p = row["adapter_path"] if hasattr(row, "__getitem__") else row[0]
+        if p and p != active_path and Path(p).exists():
+            shutil.rmtree(p, ignore_errors=True)
+            dirs_removed += 1
+
+    # Remove all sweep_run adapter dirs (always temporary)
+    sweep_dirs_removed = 0
+    with db._conn() as con:
+        rows = con.execute(
+            "SELECT adapter_path FROM sweep_runs WHERE adapter_path IS NOT NULL"
+        ).fetchall()
+    for row in rows:
+        p = row["adapter_path"] if hasattr(row, "__getitem__") else row[0]
+        if p and Path(p).exists():
+            shutil.rmtree(p, ignore_errors=True)
+            sweep_dirs_removed += 1
+
+    print(f"Legacy training_runs marked failed : {legacy_failed}")
+    print(f"Sweep_runs marked failed           : {sweep_runs_failed}")
+    print(f"Sweeps marked failed               : {sweeps_failed}")
+    print(f"Adapter dirs removed               : {dirs_removed + sweep_dirs_removed}")
 
 
 def _cli_dry_run(config) -> None:
@@ -550,6 +625,11 @@ def main_sync() -> None:
         action="store_true",
         help="Preview training examples without training. Writes $ROOT_DIR/dry-run.md.",
     )
+    group.add_argument(
+        "--clean",
+        action="store_true",
+        help="Clean up orphaned adapter dirs and failed/stuck DB records (server must be stopped).",
+    )
     # Internal flag used by --start to run the actual blocking server process.
     group.add_argument("--foreground", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument(
@@ -580,6 +660,8 @@ def main_sync() -> None:
         _cli_train(cfg)
     elif args.dry_run:
         _cli_dry_run(cfg)
+    elif args.clean:
+        _cli_clean(cfg)
     else:
         # --start OR no args → start as background daemon
         _cli_start(cfg)

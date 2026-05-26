@@ -1,6 +1,6 @@
 [project]
 name = "groundcortex"
-version = "0.2.13"
+version = "0.2.14"
 description = "Automated thought consolidation engine for AI agents using LoRA fine-tuning"
 readme = "README.md"
 requires-python = ">=3.12"

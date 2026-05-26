@@ -20,13 +20,13 @@ class TestDefaults:
 
     def test_lora_hyperparams(self, tmp_path):
         cfg = _cfg(tmp_path)
-        assert cfg.rank == 32
-        assert cfg.alpha == 64
-        assert cfg.learning_rate == pytest.approx(5e-4)
-        assert cfg.epochs == 25
-        assert cfg.batch_size == 2
-        assert cfg.gradient_accumulation == 2
-        assert cfg.num_lora_layers == 0
+        assert cfg.rank == [32]
+        assert cfg.alpha == [64]
+        assert cfg.learning_rate == [pytest.approx(5e-4)]
+        assert cfg.epochs == [25]
+        assert cfg.batch_size == [2]
+        assert cfg.gradient_accumulation == [2]
+        assert cfg.num_lora_layers == [0]
 
     def test_ports(self, tmp_path):
         cfg = _cfg(tmp_path)
@@ -117,7 +117,7 @@ class TestValidators:
 
     def test_env_var_overrides_rank_default(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GROUNDCORTEX_RANK", "16")
-        assert _cfg(tmp_path).rank == 16
+        assert _cfg(tmp_path).rank == [16]
 
     def test_env_var_overrides_cron_enabled(self, tmp_path, monkeypatch):
         monkeypatch.setenv("GROUNDCORTEX_CRON_ENABLED", "false")
@@ -138,3 +138,43 @@ class TestValidators:
             ],
         )
         assert set(cfg.mcp_exposed_tools) == _ALL_TOOLS
+
+
+class TestSweepableParams:
+    def test_scalar_learning_rate_becomes_list(self, tmp_path):
+        cfg = _cfg(tmp_path, learning_rate="1e-5")
+        assert cfg.learning_rate == [pytest.approx(1e-5)]
+
+    def test_json_array_learning_rate(self, tmp_path):
+        cfg = _cfg(tmp_path, learning_rate="[5e-5, 1e-5]")
+        assert cfg.learning_rate == [pytest.approx(5e-5), pytest.approx(1e-5)]
+
+    def test_scalar_epochs_becomes_list(self, tmp_path):
+        cfg = _cfg(tmp_path, epochs="15")
+        assert cfg.epochs == [15]
+
+    def test_json_array_epochs(self, tmp_path):
+        cfg = _cfg(tmp_path, epochs="[10, 15, 20]")
+        assert cfg.epochs == [10, 15, 20]
+
+    def test_python_list_passthrough(self, tmp_path):
+        cfg = _cfg(tmp_path, rank=[8, 16, 32])
+        assert cfg.rank == [8, 16, 32]
+
+    def test_for_trial_returns_single_element_lists(self, tmp_path):
+        cfg = _cfg(tmp_path, learning_rate=[5e-5, 1e-5], epochs=[10, 20])
+        combo = {"learning_rate": 1e-5, "epochs": 20}
+        trial = cfg.for_trial(combo)
+        assert trial.learning_rate == [pytest.approx(1e-5)]
+        assert trial.epochs == [20]
+
+    def test_for_trial_does_not_mutate_original(self, tmp_path):
+        cfg = _cfg(tmp_path, learning_rate=[5e-5, 1e-5])
+        _ = cfg.for_trial({"learning_rate": 1e-5})
+        assert cfg.learning_rate == [pytest.approx(5e-5), pytest.approx(1e-5)]
+
+    def test_for_trial_other_fields_unchanged(self, tmp_path):
+        cfg = _cfg(tmp_path, rank=[8, 16])
+        trial = cfg.for_trial({"rank": 16})
+        assert trial.model_name == cfg.model_name
+        assert trial.epochs == cfg.epochs

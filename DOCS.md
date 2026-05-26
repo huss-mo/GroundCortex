@@ -461,6 +461,46 @@ The hyperparameters below are the values validated by `examples/hypothesis.py`. 
 | `batch_size` | 2 | Per-device batch size. Effective batch size = `batch_size × gradient_accumulation`. |
 | `gradient_accumulation` | 2 | Gradient accumulation steps. Effective batch size = `2 × 2 = 4`. Validated minimum for the default 2B model; increase if memory allows, decrease if OOM. |
 
+### Hyperparameter Sweep
+
+When training params vary with dataset size and content type, GroundCortex can automatically search for the best combination. Setting any training parameter to a JSON array in `.env` triggers a cartesian-product sweep; single scalar values produce a sweep of one trial (the same code path always runs).
+
+**Single run (default):**
+```
+GROUNDCORTEX_LEARNING_RATE=1e-5
+GROUNDCORTEX_EPOCHS=15
+```
+
+**Sweep over two learning rates:**
+```
+GROUNDCORTEX_LEARNING_RATE=[1e-5, 5e-6]
+GROUNDCORTEX_EPOCHS=15
+```
+
+**Full cartesian product (6 trials):**
+```
+GROUNDCORTEX_LEARNING_RATE=[5e-5, 1e-5]
+GROUNDCORTEX_EPOCHS=[10, 15, 20]
+```
+
+**Sweepable parameters:** `learning_rate`, `epochs`, `rank`, `alpha`, `batch_size`, `gradient_accumulation`, `num_lora_layers`.
+
+**How the winner is selected:** trials are ranked by recall (primary) and sanity (secondary). The highest-scoring completed trial wins. The winner is added to `training_runs` as the next `v<N>` version and activated only if it passed the quality gate. Trials that raised an exception are marked `failed` and skipped; the sweep continues with remaining trials.
+
+**Non-winning adapters** are deleted from disk once the sweep completes, keeping only the winner.
+
+**Resume after crash:** if the server dies mid-sweep, `--train` resumes from the next untried trial. Trials that completed training but not evaluation (`evaluating` status) resume from the evaluation step without retraining.
+
+**Run time:** each trial takes approximately as long as a regular `--train` call. A sweep of N trials takes roughly N × that duration. Eval-only resumes are faster since training is skipped.
+
+### Cleaning Up
+
+```bash
+groundcortex --clean
+```
+
+Removes orphaned adapter directories and marks stuck DB records as failed. The server **must be stopped** before running `--clean`. This is useful after a crash or interrupted sweep leaves partial state on disk.
+
 ---
 
 ## Cron Scheduler

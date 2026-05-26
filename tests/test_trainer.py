@@ -76,25 +76,25 @@ def test_create_trainer_returns_lora_when_not_qlora_on_mac(config):
 
 
 def test_num_lora_layers_zero_passes_none(config):
-    config.num_lora_layers = 0
+    config.num_lora_layers = [0]
     lora_kwargs, _ = _run_train(config, num_hidden_layers=10)
     assert lora_kwargs["layers_to_transform"] is None
 
 
 def test_num_lora_layers_cap_selects_top_n(config):
-    config.num_lora_layers = 4
+    config.num_lora_layers = [4]
     lora_kwargs, _ = _run_train(config, num_hidden_layers=10)
     assert lora_kwargs["layers_to_transform"] == [6, 7, 8, 9]
 
 
 def test_num_lora_layers_clamped_to_model_total(config):
-    config.num_lora_layers = 20
+    config.num_lora_layers = [20]
     lora_kwargs, _ = _run_train(config, num_hidden_layers=10)
     assert lora_kwargs["layers_to_transform"] == list(range(10))
 
 
 def test_num_lora_layers_equal_to_total(config):
-    config.num_lora_layers = 10
+    config.num_lora_layers = [10]
     lora_kwargs, _ = _run_train(config, num_hidden_layers=10)
     assert lora_kwargs["layers_to_transform"] == list(range(10))
 
@@ -105,7 +105,7 @@ def test_num_lora_layers_equal_to_total(config):
 
 
 def test_gradient_accumulation_passed_to_sft_config(config):
-    config.gradient_accumulation = 4
+    config.gradient_accumulation = [4]
     _, sft_kwargs = _run_train(config)
     assert sft_kwargs["gradient_accumulation_steps"] == 4
 
@@ -121,10 +121,10 @@ def test_gradient_accumulation_default_is_two(config):
 
 
 def test_hyperparams_snapshot_includes_num_lora_layers(config):
-    config.num_lora_layers = 8
+    config.num_lora_layers = [8]
     assert LoRATrainer(config).hyperparams_snapshot()["num_lora_layers"] == 8
 
 
 def test_hyperparams_snapshot_includes_gradient_accumulation(config):
-    config.gradient_accumulation = 4
+    config.gradient_accumulation = [4]
     assert LoRATrainer(config).hyperparams_snapshot()["gradient_accumulation"] == 4

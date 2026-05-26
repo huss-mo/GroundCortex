@@ -102,14 +102,14 @@ class LoRATrainer:
         model, tokenizer = _load_model(cfg.model_name, use_qlora=cfg.use_qlora)
 
         layers_to_transform = None
-        if cfg.num_lora_layers > 0:
+        if cfg.num_lora_layers[0] > 0:
             total = model.config.num_hidden_layers
-            n = min(cfg.num_lora_layers, total)
+            n = min(cfg.num_lora_layers[0], total)
             layers_to_transform = list(range(total - n, total))
 
         lora_config = LoraConfig(
-            r=cfg.rank,
-            lora_alpha=cfg.alpha,
+            r=cfg.rank[0],
+            lora_alpha=cfg.alpha[0],
             target_modules=find_lora_targets(model),
             layers_to_transform=layers_to_transform,
             lora_dropout=0.1,
@@ -137,11 +137,11 @@ class LoRATrainer:
             args=SFTConfig(
                 assistant_only_loss=True,
                 max_length=512,
-                per_device_train_batch_size=cfg.batch_size,
-                gradient_accumulation_steps=cfg.gradient_accumulation,
+                per_device_train_batch_size=cfg.batch_size[0],
+                gradient_accumulation_steps=cfg.gradient_accumulation[0],
                 warmup_steps=10,
-                num_train_epochs=cfg.epochs,
-                learning_rate=cfg.learning_rate,
+                num_train_epochs=cfg.epochs[0],
+                learning_rate=cfg.learning_rate[0],
                 fp16=use_fp16,
                 logging_steps=10,
                 eval_strategy="no",
@@ -174,15 +174,15 @@ class LoRATrainer:
         cfg = self._config
         return {
             "model_name": cfg.model_name,
-            "rank": cfg.rank,
-            "alpha": cfg.alpha,
-            "learning_rate": cfg.learning_rate,
-            "epochs": cfg.epochs,
-            "batch_size": cfg.batch_size,
+            "rank": cfg.rank[0],
+            "alpha": cfg.alpha[0],
+            "learning_rate": cfg.learning_rate[0],
+            "epochs": cfg.epochs[0],
+            "batch_size": cfg.batch_size[0],
             "device": self._device,
             "use_qlora": cfg.use_qlora,
-            "num_lora_layers": cfg.num_lora_layers,
-            "gradient_accumulation": cfg.gradient_accumulation,
+            "num_lora_layers": cfg.num_lora_layers[0],
+            "gradient_accumulation": cfg.gradient_accumulation[0],
         }
 
 

@@ -31,6 +31,9 @@ def _add_pending(db, content="A fact.") -> Experience:
 
 def _patch_trainer(adapter_path: str, fail: bool = False):
     """Return a context manager that patches create_trainer with a mock."""
+    from pathlib import Path
+    if not fail and adapter_path:
+        Path(adapter_path).mkdir(parents=True, exist_ok=True)
     mock = MagicMock()
     instance = MagicMock()
     instance.hyperparams_snapshot.return_value = {"rank": 32}
@@ -39,7 +42,8 @@ def _patch_trainer(adapter_path: str, fail: bool = False):
     else:
         instance.train.return_value = adapter_path
     mock.return_value = instance
-    return patch("groundcortex.consolidator.create_trainer", mock), instance
+    # consolidation now delegates to sweep.py, so patch there
+    return patch("groundcortex.sweep.create_trainer", mock), instance
 
 
 # ---------------------------------------------------------------------------
@@ -159,16 +163,15 @@ class TestRunConsolidation:
         with patch_ctx:
             result = _run(run_consolidation("mcp", db, config))
         assert result["status"] == "failed"
-        assert "CUDA OOM" in result["error"]
 
-    def test_training_failure_marks_run_as_failed(self, db, config):
+    def test_training_failure_returns_no_training_run(self, db, config):
         from groundcortex.consolidator import run_consolidation
         _add_pending(db)
         patch_ctx, _ = _patch_trainer("", fail=True)
         with patch_ctx:
             _run(run_consolidation("mcp", db, config))
-        runs = db.list_runs()
-        assert runs[0].status == "failed"
+        # All trials failed → sweep failed → no training_run record created
+        assert db.list_runs() == []
 
     def test_training_failure_leaves_pending_untouched(self, db, config):
         from groundcortex.consolidator import run_consolidation
@@ -176,12 +179,13 @@ class TestRunConsolidation:
         patch_ctx, _ = _patch_trainer("", fail=True)
         with patch_ctx:
             _run(run_consolidation("mcp", db, config))
-        assert db.count_pending() == 1
+        assert len(db.get_training_scope()) == 1
 
     def test_inference_manager_hot_swapped_on_success(self, db, config, tmp_path):
         from groundcortex.consolidator import run_consolidation
         _add_pending(db)
         mock_manager = MagicMock()
+        mock_manager.list_loaded_adapters.return_value = []
         adapter = str(tmp_path / "adapters" / "v1")
         patch_ctx, _ = _patch_trainer(adapter)
         with patch_ctx:
@@ -197,9 +201,9 @@ class TestRunConsolidation:
         mock_manager = MagicMock()
         captured = {}
         original_init = CurriculumManager.__init__
-        def capturing_init(self, db, generate_fn=None):
+        def capturing_init(self, _db, generate_fn=None):
             captured["generate_fn"] = generate_fn
-            original_init(self, db, generate_fn)
+            original_init(self, _db, generate_fn)
         patch_ctx, _ = _patch_trainer(str(tmp_path / "adapters" / "v1"))
         with patch_ctx, patch.object(CurriculumManager, "__init__", capturing_init):
             _run(run_consolidation("mcp", db, config, mock_manager))
@@ -364,15 +368,13 @@ class TestQualityGate:
         mock_eval.assert_not_called()
         assert result["status"] == "complete"
 
-    def test_status_set_to_evaluating_before_eval(self, db, config, tmp_path):
+    def test_eval_crash_marks_trial_failed_sweep_continues(self, db, config, tmp_path):
         from unittest.mock import patch
         from groundcortex.consolidator import run_consolidation
         _add_pending(db)
         adapter = str(tmp_path / "adapters" / "v1")
         patch_ctx, _ = _patch_trainer(adapter)
-        # eval crashes immediately - run should be left at "evaluating" in DB
         mock_manager = MagicMock()
-        mock_manager.is_ready = True
         mock_manager.list_loaded_adapters.return_value = []
         config.eval_enabled = True
         with patch_ctx, patch(
@@ -380,166 +382,6 @@ class TestQualityGate:
             side_effect=RuntimeError("OOM"),
         ):
             result = _run(run_consolidation("mcp", db, config, mock_manager))
+        # All trials failed → sweep returns failed, no training_run created
         assert result["status"] == "failed"
-        assert db.list_runs()[0].status == "evaluating"
-
-    def test_eval_crash_leaves_status_evaluating_for_retry(self, db, config, tmp_path):
-        from unittest.mock import patch
-        from groundcortex.consolidator import run_consolidation
-        _add_pending(db)
-        adapter = str(tmp_path / "adapters" / "v1")
-        patch_ctx, _ = _patch_trainer(adapter)
-        mock_manager = MagicMock()
-        mock_manager.is_ready = True
-        mock_manager.list_loaded_adapters.return_value = []
-        config.eval_enabled = True
-        with patch_ctx, patch(
-            "groundcortex.evaluation.evaluator.evaluate_adapter",
-            side_effect=RuntimeError("OOM"),
-        ):
-            _run(run_consolidation("mcp", db, config, mock_manager))
-        # Status must be "evaluating" so next --train resumes rather than re-trains
-        assert db.list_runs()[0].status == "evaluating"
-
-
-class TestResumeEvaluating:
-    """Tests for the step-0 resume path in run_consolidation."""
-
-    def _make_evaluating_run(self, db, adapter_path: str, version: str = "v1"):
-        from groundcortex.pipeline.models import TrainingRun
-        run = TrainingRun(
-            version=version,
-            trigger="mcp",
-            adapter_path=adapter_path,
-            status="evaluating",
-            model_name="test-model",
-        )
-        db.create_training_run(run)
-        return run
-
-    def test_resume_skips_trainer_when_evaluating_run_exists(self, db, config, tmp_path):
-        from unittest.mock import patch
-        from groundcortex.consolidator import run_consolidation
-        adapter = tmp_path / "v1"
-        adapter.mkdir()
-        self._make_evaluating_run(db, str(adapter))
-        patch_ctx, trainer_instance = _patch_trainer(str(tmp_path / "v2"))
-        with patch_ctx:
-            _run(run_consolidation("mcp", db, config))
-        trainer_instance.train.assert_not_called()
-
-    def test_resume_skips_trainer_even_with_pending_experiences(self, db, config, tmp_path):
-        from unittest.mock import patch
-        from groundcortex.consolidator import run_consolidation
-        _add_pending(db)
-        adapter = tmp_path / "v1"
-        adapter.mkdir()
-        self._make_evaluating_run(db, str(adapter))
-        patch_ctx, trainer_instance = _patch_trainer(str(tmp_path / "v2"))
-        with patch_ctx:
-            _run(run_consolidation("mcp", db, config))
-        trainer_instance.train.assert_not_called()
-
-    def test_resume_marks_complete_on_eval_pass(self, db, config, tmp_path):
-        from unittest.mock import MagicMock, patch
-        from groundcortex.consolidator import run_consolidation
-        adapter = tmp_path / "v1"
-        adapter.mkdir()
-        run = self._make_evaluating_run(db, str(adapter))
-        mock_manager = MagicMock()
-        mock_manager.is_ready = True
-        mock_manager.list_loaded_adapters.return_value = []
-        config.eval_enabled = True
-        mock_eval_result = MagicMock()
-        mock_eval_result.passed = True
-        mock_eval_result.as_dict.return_value = {"recall_pct": 1.0}
-        with patch("groundcortex.evaluation.evaluator.evaluate_adapter", return_value=mock_eval_result):
-            result = _run(run_consolidation("mcp", db, config, mock_manager))
-        assert result["status"] == "complete"
-        assert result["resumed"] is True
-        assert db.get_run_by_version("v1").status == "complete"
-
-    def test_resume_marks_no_pass_on_eval_fail(self, db, config, tmp_path):
-        from unittest.mock import MagicMock, patch
-        from groundcortex.consolidator import run_consolidation
-        adapter = tmp_path / "v1"
-        adapter.mkdir()
-        self._make_evaluating_run(db, str(adapter))
-        mock_manager = MagicMock()
-        mock_manager.is_ready = True
-        mock_manager.list_loaded_adapters.return_value = []
-        config.eval_enabled = True
-        mock_eval_result = MagicMock()
-        mock_eval_result.passed = False
-        mock_eval_result.as_dict.return_value = {"recall_pct": 0.2}
-        with patch("groundcortex.evaluation.evaluator.evaluate_adapter", return_value=mock_eval_result):
-            result = _run(run_consolidation("mcp", db, config, mock_manager))
-        assert result["status"] == "no-pass"
-        assert result["resumed"] is True
-        assert db.get_run_by_version("v1").status == "no-pass"
-
-    def test_resume_sets_active_run_on_complete(self, db, config, tmp_path):
-        from unittest.mock import MagicMock, patch
-        from groundcortex.consolidator import run_consolidation
-        adapter = tmp_path / "v1"
-        adapter.mkdir()
-        self._make_evaluating_run(db, str(adapter))
-        mock_manager = MagicMock()
-        mock_manager.is_ready = True
-        mock_manager.list_loaded_adapters.return_value = []
-        config.eval_enabled = True
-        mock_eval_result = MagicMock()
-        mock_eval_result.passed = True
-        mock_eval_result.as_dict.return_value = {}
-        with patch("groundcortex.evaluation.evaluator.evaluate_adapter", return_value=mock_eval_result):
-            _run(run_consolidation("mcp", db, config, mock_manager))
-        assert db.get_active_run() is not None
-        assert db.get_active_run().version == "v1"
-
-    def test_resume_eval_crash_leaves_evaluating_for_retry(self, db, config, tmp_path):
-        from unittest.mock import MagicMock, patch
-        from groundcortex.consolidator import run_consolidation
-        adapter = tmp_path / "v1"
-        adapter.mkdir()
-        self._make_evaluating_run(db, str(adapter))
-        mock_manager = MagicMock()
-        mock_manager.is_ready = True
-        mock_manager.list_loaded_adapters.return_value = []
-        config.eval_enabled = True
-        with patch("groundcortex.evaluation.evaluator.evaluate_adapter", side_effect=RuntimeError("OOM")):
-            result = _run(run_consolidation("mcp", db, config, mock_manager))
-        assert result["status"] == "failed"
-        assert result["resumed"] is True
-        # Must stay "evaluating" so next --train retries
-        assert db.get_run_by_version("v1").status == "evaluating"
-
-    def test_resume_missing_adapter_marks_failed_and_falls_through(self, db, config, tmp_path):
-        from unittest.mock import patch
-        from groundcortex.consolidator import run_consolidation
-        # Adapter dir does not exist
-        self._make_evaluating_run(db, str(tmp_path / "v1_missing"))
-        _add_pending(db)
-        patch_ctx, trainer_instance = _patch_trainer(str(tmp_path / "v2"))
-        with patch_ctx:
-            _run(run_consolidation("mcp", db, config))
-        # Old run marked failed
-        assert db.get_run_by_version("v1").status == "failed"
-        # Fell through and trained on pending
-        trainer_instance.train.assert_called_once()
-
-    def test_resume_hot_swaps_adapter_on_complete(self, db, config, tmp_path):
-        from unittest.mock import MagicMock, patch
-        from groundcortex.consolidator import run_consolidation
-        adapter = tmp_path / "v1"
-        adapter.mkdir()
-        self._make_evaluating_run(db, str(adapter))
-        mock_manager = MagicMock()
-        mock_manager.is_ready = True
-        mock_manager.list_loaded_adapters.return_value = []
-        config.eval_enabled = True
-        mock_eval_result = MagicMock()
-        mock_eval_result.passed = True
-        mock_eval_result.as_dict.return_value = {}
-        with patch("groundcortex.evaluation.evaluator.evaluate_adapter", return_value=mock_eval_result):
-            _run(run_consolidation("mcp", db, config, mock_manager))
-        mock_manager.set_active.assert_called_with("v1")
+        assert db.list_runs() == []

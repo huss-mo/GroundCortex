@@ -97,18 +97,18 @@ class MLXTrainer:
         adapter_dir = str(cfg.output_dir / version)
         os.makedirs(adapter_dir, exist_ok=True)
 
-        iters = math.ceil(len(dataset) / cfg.batch_size) * cfg.epochs
+        iters = math.ceil(len(dataset) / cfg.batch_size[0]) * cfg.epochs[0]
 
         train_args = {
             "model_name": cfg.model_name,
             "adapter_dir": adapter_dir,
-            "rank": cfg.rank,
-            "alpha": cfg.alpha,
-            "learning_rate": cfg.learning_rate,
-            "batch_size": cfg.batch_size,
+            "rank": cfg.rank[0],
+            "alpha": cfg.alpha[0],
+            "learning_rate": cfg.learning_rate[0],
+            "batch_size": cfg.batch_size[0],
             "iters": iters,
-            "gradient_accumulation": cfg.gradient_accumulation,
-            "num_lora_layers": cfg.num_lora_layers,
+            "gradient_accumulation": cfg.gradient_accumulation[0],
+            "num_lora_layers": cfg.num_lora_layers[0],
         }
 
         # Run training in a subprocess. When the subprocess exits, the OS
@@ -136,15 +136,15 @@ class MLXTrainer:
         cfg = self._config
         return {
             "model_name": cfg.model_name,
-            "rank": cfg.rank,
-            "alpha": cfg.alpha,
-            "learning_rate": cfg.learning_rate,
-            "epochs": cfg.epochs,
-            "batch_size": cfg.batch_size,
+            "rank": cfg.rank[0],
+            "alpha": cfg.alpha[0],
+            "learning_rate": cfg.learning_rate[0],
+            "epochs": cfg.epochs[0],
+            "batch_size": cfg.batch_size[0],
             "device": "mps",
             "use_qlora": True,
             "backend": "mlx",
             "bits": 4,
-            "num_lora_layers": cfg.num_lora_layers,
-            "gradient_accumulation": cfg.gradient_accumulation,
+            "num_lora_layers": cfg.num_lora_layers[0],
+            "gradient_accumulation": cfg.gradient_accumulation[0],
         }

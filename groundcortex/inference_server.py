@@ -346,8 +346,16 @@ async def trigger_training():
     if _inference_manager.is_training:
         raise HTTPException(409, "Training already in progress.")
 
-    from groundcortex.consolidator import run_consolidation
-    return await run_consolidation("cli", _db, _config, _inference_manager)
+    async def _run():
+        from groundcortex.consolidator import run_consolidation
+        try:
+            await run_consolidation("cli", _db, _config, _inference_manager)
+        except Exception:
+            import logging
+            logging.getLogger(__name__).exception("Background training task failed")
+
+    asyncio.create_task(_run())
+    return {"status": "started"}
 
 
 @app.post("/v1/control/dry-run")

@@ -5,7 +5,7 @@ import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
 
-from groundcortex.pipeline.models import Experience, TrainingExample, TrainingRun
+from groundcortex.pipeline.models import Experience, Sweep, SweepRun, TrainingExample, TrainingRun
 
 
 class Database:
@@ -73,6 +73,28 @@ class Database:
                     experience_id TEXT,
                     variant       TEXT NOT NULL,
                     messages      TEXT NOT NULL
+                );
+
+                CREATE TABLE IF NOT EXISTS sweeps (
+                    id           TEXT PRIMARY KEY,
+                    status       TEXT NOT NULL DEFAULT 'running',
+                    param_grid   TEXT NOT NULL,
+                    total        INTEGER NOT NULL,
+                    created_at   TEXT NOT NULL,
+                    completed_at TEXT
+                );
+
+                CREATE TABLE IF NOT EXISTS sweep_runs (
+                    id            TEXT PRIMARY KEY,
+                    sweep_id      TEXT NOT NULL REFERENCES sweeps(id),
+                    combo_index   INTEGER NOT NULL,
+                    params        TEXT NOT NULL,
+                    status        TEXT NOT NULL DEFAULT 'pending',
+                    recall_pct    REAL,
+                    sanity_pct    REAL,
+                    adapter_path  TEXT,
+                    created_at    TEXT NOT NULL,
+                    completed_at  TEXT
                 );
             """)
             # Migration: add model_name column if not present (idempotent)
@@ -340,7 +362,14 @@ class Database:
             ]
 
     def cleanup_interrupted_runs(self) -> list[str]:
-        """Mark any stuck 'training' rows as 'failed' and return their adapter paths for cleanup."""
+        """Mark stuck runs as failed at server startup.
+
+        - training_runs with status='training' → 'failed' (legacy; new code never creates these)
+        - sweep_runs with status='running' → 'failed' (training was in-flight when server died)
+        - sweep_runs with status='evaluating' are left as-is (training done, eval will resume)
+
+        Returns adapter paths from failed training_runs for optional disk cleanup.
+        """
         with self._conn() as con:
             rows = con.execute(
                 "SELECT id, adapter_path FROM training_runs WHERE status = 'training'"
@@ -349,7 +378,115 @@ class Database:
                 con.execute(
                     "UPDATE training_runs SET status = 'failed' WHERE status = 'training'"
                 )
+            con.execute(
+                "UPDATE sweep_runs SET status = 'failed' WHERE status = 'running'"
+            )
         return [row["adapter_path"] for row in rows if row["adapter_path"]]
+
+    # ------------------------------------------------------------------
+    # sweeps
+    # ------------------------------------------------------------------
+
+    def create_sweep(self, sweep: Sweep) -> Sweep:
+        with self._conn() as con:
+            con.execute(
+                """
+                INSERT INTO sweeps (id, status, param_grid, total, created_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    sweep.id, sweep.status, json.dumps(sweep.param_grid),
+                    sweep.total, sweep.created_at, sweep.completed_at,
+                ),
+            )
+        return sweep
+
+    def get_active_sweep(self) -> Sweep | None:
+        """Return the most recent sweep with status='running', or None."""
+        with self._conn() as con:
+            row = con.execute(
+                "SELECT * FROM sweeps WHERE status = 'running' ORDER BY created_at DESC LIMIT 1"
+            ).fetchone()
+            return self._row_to_sweep(row) if row else None
+
+    def update_sweep(self, sweep_id: str, **fields) -> None:
+        if not fields:
+            return
+        if "param_grid" in fields:
+            fields["param_grid"] = json.dumps(fields["param_grid"])
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        with self._conn() as con:
+            con.execute(
+                f"UPDATE sweeps SET {set_clause} WHERE id = ?",
+                [*fields.values(), sweep_id],
+            )
+
+    @staticmethod
+    def _row_to_sweep(row: sqlite3.Row) -> Sweep:
+        return Sweep(
+            id=row["id"],
+            status=row["status"],
+            param_grid=json.loads(row["param_grid"]),
+            total=row["total"],
+            created_at=row["created_at"],
+            completed_at=row["completed_at"],
+        )
+
+    # ------------------------------------------------------------------
+    # sweep_runs
+    # ------------------------------------------------------------------
+
+    def create_sweep_run(self, run: SweepRun) -> SweepRun:
+        with self._conn() as con:
+            con.execute(
+                """
+                INSERT INTO sweep_runs
+                    (id, sweep_id, combo_index, params, status,
+                     recall_pct, sanity_pct, adapter_path, created_at, completed_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    run.id, run.sweep_id, run.combo_index, json.dumps(run.params),
+                    run.status, run.recall_pct, run.sanity_pct,
+                    run.adapter_path, run.created_at, run.completed_at,
+                ),
+            )
+        return run
+
+    def update_sweep_run(self, run_id: str, **fields) -> None:
+        if not fields:
+            return
+        if "params" in fields:
+            fields["params"] = json.dumps(fields["params"])
+        set_clause = ", ".join(f"{k} = ?" for k in fields)
+        with self._conn() as con:
+            con.execute(
+                f"UPDATE sweep_runs SET {set_clause} WHERE id = ?",
+                [*fields.values(), run_id],
+            )
+
+    def get_sweep_runs(self, sweep_id: str) -> list[SweepRun]:
+        with self._conn() as con:
+            rows = con.execute(
+                "SELECT * FROM sweep_runs WHERE sweep_id = ? ORDER BY combo_index ASC",
+                (sweep_id,),
+            ).fetchall()
+            return [self._row_to_sweep_run(r) for r in rows]
+
+    @staticmethod
+    def _row_to_sweep_run(row: sqlite3.Row) -> SweepRun:
+        return SweepRun(
+            id=row["id"],
+            sweep_id=row["sweep_id"],
+            combo_index=row["combo_index"],
+            params=json.loads(row["params"]),
+            status=row["status"],
+            recall_pct=row["recall_pct"],
+            sanity_pct=row["sanity_pct"],
+            adapter_path=row["adapter_path"],
+            created_at=row["created_at"],
+            completed_at=row["completed_at"],
+        )
 
     def backfill_model_name(self, model_name: str) -> None:
         """Set model_name for rows that predate model tracking (model_name = '')."""

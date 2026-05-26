@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from groundcortex.buffer.db import Database
-from groundcortex.pipeline.models import Experience, TrainingExample, TrainingRun
+from groundcortex.pipeline.models import Experience, Sweep, SweepRun, TrainingExample, TrainingRun
 
 
 # ---------------------------------------------------------------------------
@@ -448,3 +448,113 @@ class TestCleanupInterruptedRuns:
         db.create_training_run(_run(version="v2", status="complete"))
         paths = db.cleanup_interrupted_runs()
         assert paths == []
+
+
+# ---------------------------------------------------------------------------
+# sweeps + sweep_runs
+# ---------------------------------------------------------------------------
+
+def _sweep(**kwargs) -> Sweep:
+    return Sweep(**kwargs)
+
+
+def _sweep_run(sweep_id: str, combo_index: int = 0, status: str = "pending", **kwargs) -> SweepRun:
+    return SweepRun(sweep_id=sweep_id, combo_index=combo_index, status=status, params={}, **kwargs)
+
+
+class TestSweeps:
+    def test_create_and_get_active_sweep(self, db):
+        sweep = _sweep(param_grid=[{"lr": 1e-5}], total=1)
+        db.create_sweep(sweep)
+        active = db.get_active_sweep()
+        assert active is not None
+        assert active.id == sweep.id
+        assert active.status == "running"
+
+    def test_get_active_sweep_returns_none_when_complete(self, db):
+        sweep = _sweep(param_grid=[], total=0)
+        db.create_sweep(sweep)
+        db.update_sweep(sweep.id, status="complete")
+        assert db.get_active_sweep() is None
+
+    def test_get_active_sweep_returns_none_when_empty(self, db):
+        assert db.get_active_sweep() is None
+
+    def test_update_sweep_status(self, db):
+        sweep = _sweep(param_grid=[], total=0)
+        db.create_sweep(sweep)
+        db.update_sweep(sweep.id, status="failed")
+        active = db.get_active_sweep()
+        assert active is None
+
+    def test_get_active_sweep_returns_most_recent(self, db):
+        s1 = _sweep(param_grid=[], total=0)
+        s2 = _sweep(param_grid=[], total=0)
+        db.create_sweep(s1)
+        db.create_sweep(s2)
+        active = db.get_active_sweep()
+        assert active.id == s2.id
+
+    def test_param_grid_round_trips(self, db):
+        grid = [{"lr": 1e-5, "epochs": 10}, {"lr": 5e-6, "epochs": 20}]
+        sweep = _sweep(param_grid=grid, total=2)
+        db.create_sweep(sweep)
+        loaded = db.get_active_sweep()
+        assert loaded.param_grid == grid
+
+
+class TestSweepRuns:
+    def test_create_and_list_sweep_runs(self, db):
+        sweep = _sweep(param_grid=[], total=2)
+        db.create_sweep(sweep)
+        r0 = _sweep_run(sweep.id, combo_index=0)
+        r1 = _sweep_run(sweep.id, combo_index=1)
+        db.create_sweep_run(r0)
+        db.create_sweep_run(r1)
+        runs = db.get_sweep_runs(sweep.id)
+        assert len(runs) == 2
+        assert runs[0].combo_index == 0
+        assert runs[1].combo_index == 1
+
+    def test_get_sweep_runs_empty(self, db):
+        sweep = _sweep(param_grid=[], total=0)
+        db.create_sweep(sweep)
+        assert db.get_sweep_runs(sweep.id) == []
+
+    def test_update_sweep_run_status(self, db):
+        sweep = _sweep(param_grid=[], total=1)
+        db.create_sweep(sweep)
+        sr = _sweep_run(sweep.id)
+        db.create_sweep_run(sr)
+        db.update_sweep_run(sr.id, status="complete", recall_pct=0.8, sanity_pct=0.9)
+        runs = db.get_sweep_runs(sweep.id)
+        assert runs[0].status == "complete"
+        assert runs[0].recall_pct == pytest.approx(0.8)
+        assert runs[0].sanity_pct == pytest.approx(0.9)
+
+    def test_update_sweep_run_adapter_path(self, db):
+        sweep = _sweep(param_grid=[], total=1)
+        db.create_sweep(sweep)
+        sr = _sweep_run(sweep.id)
+        db.create_sweep_run(sr)
+        db.update_sweep_run(sr.id, adapter_path="/tmp/trial_0")
+        runs = db.get_sweep_runs(sweep.id)
+        assert runs[0].adapter_path == "/tmp/trial_0"
+
+    def test_cleanup_interrupted_runs_marks_running_sweep_runs_failed(self, db):
+        sweep = _sweep(param_grid=[], total=1)
+        db.create_sweep(sweep)
+        sr = _sweep_run(sweep.id, status="running")
+        db.create_sweep_run(sr)
+        db.cleanup_interrupted_runs()
+        runs = db.get_sweep_runs(sweep.id)
+        assert runs[0].status == "failed"
+
+    def test_cleanup_leaves_evaluating_sweep_runs_intact(self, db):
+        sweep = _sweep(param_grid=[], total=1)
+        db.create_sweep(sweep)
+        sr = _sweep_run(sweep.id, status="evaluating")
+        db.create_sweep_run(sr)
+        db.cleanup_interrupted_runs()
+        runs = db.get_sweep_runs(sweep.id)
+        assert runs[0].status == "evaluating"

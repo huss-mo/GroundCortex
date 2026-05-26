@@ -1,12 +1,43 @@
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from pydantic import Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+if TYPE_CHECKING:
+    pass
+
 _ALL_MCP_TOOLS = {"trigger_consolidation", "get_status", "switch_adapter", "list_adapters"}
+
+
+def _parse_float_list(v: object) -> list[float]:
+    if isinstance(v, list):
+        return [float(x) for x in v]
+    if isinstance(v, (int, float)):
+        return [float(v)]
+    if isinstance(v, str):
+        v = v.strip()
+        if v.startswith("["):
+            return [float(x) for x in json.loads(v)]
+        return [float(v)]
+    return v  # type: ignore[return-value]
+
+
+def _parse_int_list(v: object) -> list[int]:
+    if isinstance(v, list):
+        return [int(x) for x in v]
+    if isinstance(v, (int, float)):
+        return [int(v)]
+    if isinstance(v, str):
+        v = v.strip()
+        if v.startswith("["):
+            return [int(x) for x in json.loads(v)]
+        return [int(v)]
+    return v  # type: ignore[return-value]
 
 
 def _get_root_dir() -> Path:
@@ -39,13 +70,16 @@ class GroundCortexConfig(BaseSettings):
     output_dir: Path | None = None   # None → root_dir / "adapters"
     buffer_db: Path | None = None    # None → root_dir / "groundcortex.db"
 
-    # Training
-    rank: int = 32
-    alpha: int = 64
-    learning_rate: float = 5e-4
-    epochs: int = 25
-    batch_size: int = 2
-    gradient_accumulation: int = 2
+    # Training — each field is a list so that --train always runs a cartesian-product sweep.
+    # A single scalar value in .env (e.g. GROUNDCORTEX_LEARNING_RATE=1e-5) is parsed to a
+    # single-element list [1e-5]; a JSON array (e.g. [1e-5, 5e-6]) produces a multi-element
+    # list and triggers a multi-trial sweep.
+    rank: list[int] = Field(default_factory=lambda: [32])
+    alpha: list[int] = Field(default_factory=lambda: [64])
+    learning_rate: list[float] = Field(default_factory=lambda: [5e-4])
+    epochs: list[int] = Field(default_factory=lambda: [25])
+    batch_size: list[int] = Field(default_factory=lambda: [2])
+    gradient_accumulation: list[int] = Field(default_factory=lambda: [2])
     offload_during_training: bool = True
 
     # CUDA: int4 QLoRA via torchao (tinygemm kernels).
@@ -68,7 +102,7 @@ class GroundCortexConfig(BaseSettings):
     #      general capabilities (catastrophic forgetting is a function of param count
     #      relative to dataset size, not just training duration).
     # Both backends (mlx-lm and PEFT/TRL) respect this field.
-    num_lora_layers: int = 0
+    num_lora_layers: list[int] = Field(default_factory=lambda: [0])
 
     # Ingestion - local
     source_paths: list[Path] = []
@@ -119,6 +153,17 @@ class GroundCortexConfig(BaseSettings):
     # ------------------------------------------------------------------
     # Validators
     # ------------------------------------------------------------------
+
+    @field_validator("learning_rate", mode="before")
+    @classmethod
+    def parse_learning_rate(cls, v: object) -> list[float]:
+        return _parse_float_list(v)
+
+    @field_validator("rank", "alpha", "epochs", "batch_size",
+                     "gradient_accumulation", "num_lora_layers", mode="before")
+    @classmethod
+    def parse_int_list_fields(cls, v: object) -> list[int]:
+        return _parse_int_list(v)
 
     @field_validator("paragraph_splitter", mode="before")
     @classmethod
@@ -171,3 +216,12 @@ class GroundCortexConfig(BaseSettings):
     def ensure_output_dir(self) -> "GroundCortexConfig":
         self.output_dir.mkdir(parents=True, exist_ok=True)
         return self
+
+    def for_trial(self, combo: dict) -> "GroundCortexConfig":
+        """Return a copy of this config with each sweepable field set to a single-element list.
+
+        Used by the sweep engine to create a per-trial config before calling the trainer.
+        Model validators are NOT re-run so no side effects (no extra mkdir calls etc.).
+        """
+        update = {k: [v] for k, v in combo.items()}
+        return self.model_copy(update=update)

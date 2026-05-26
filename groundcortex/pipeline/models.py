@@ -50,3 +50,25 @@ class TrainingRun(BaseModel):
     is_active: bool = False
     created_at: str = Field(default_factory=_now)
     completed_at: str | None = None
+
+
+class Sweep(BaseModel):
+    id: str = Field(default_factory=_uuid)
+    status: Literal["running", "complete", "failed"] = "running"
+    param_grid: list[dict] = Field(default_factory=list)  # all combos
+    total: int = 0
+    created_at: str = Field(default_factory=_now)
+    completed_at: str | None = None
+
+
+class SweepRun(BaseModel):
+    id: str = Field(default_factory=_uuid)
+    sweep_id: str
+    combo_index: int
+    params: dict = Field(default_factory=dict)    # the specific combo for this trial
+    status: Literal["pending", "running", "evaluating", "complete", "failed"] = "pending"
+    recall_pct: float | None = None
+    sanity_pct: float | None = None
+    adapter_path: str | None = None
+    created_at: str = Field(default_factory=_now)
+    completed_at: str | None = None
