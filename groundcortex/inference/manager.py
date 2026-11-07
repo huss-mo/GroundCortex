@@ -13,6 +13,27 @@ from groundcortex.training.trainer import _get_device
 logger = logging.getLogger(__name__)
 
 
+def _stop_token_ids(tokenizer, model_eos: int | list[int] | None) -> list[int]:
+    """Merge the model's EOS id(s) with the tokenizer's EOS id.
+
+    Some checkpoints (e.g. Qwen3.5-(2B/9B)) ship without generation_config.json, so
+    generate() falls back to config.json's eos_token_id (<|endoftext|>) and
+    ignores the chat end-of-turn token (<|im_end|>, the tokenizer's EOS). The
+    model then keeps going past its answer, inventing extra user/assistant
+    turns until max_new_tokens.
+    """
+    if model_eos is None:
+        ids: list[int] = []
+    elif isinstance(model_eos, int):
+        ids = [model_eos]
+    else:
+        ids = list(model_eos)
+    tok_eos = tokenizer.eos_token_id
+    if tok_eos is not None and tok_eos not in ids:
+        ids.append(tok_eos)
+    return ids
+
+
 class InferenceManager:
     """Manages the base model and multiple named LoRA adapters.
 
@@ -49,6 +70,9 @@ class InferenceManager:
             base.generation_config.temperature = None
             base.generation_config.top_p = None
             base.generation_config.top_k = None
+            base.generation_config.eos_token_id = _stop_token_ids(
+                tokenizer, base.generation_config.eos_token_id
+            )
 
         # Wrap in PeftModel so we can load named adapters later.
         # We use a dummy adapter init-less approach: store the raw model
@@ -239,8 +263,17 @@ class InferenceManager:
 
         thread = threading.Thread(target=model.generate, kwargs=gen_kwargs)
         thread.start()
+        # With thinking on, the Qwen3 template ends the prompt with "<think>\n",
+        # so the output starts inside the thought and only contains "</think>".
+        # Re-add the opening tag, as generate() does, so clients can find the
+        # <think>...</think> block.
+        add_open_tag = enable_thinking
         try:
             for chunk in streamer:
+                if add_open_tag and chunk:
+                    if not chunk.lstrip().startswith("<think>"):
+                        yield "<think>\n"
+                    add_open_tag = False
                 yield chunk
         finally:
             thread.join()
@@ -253,11 +286,21 @@ class InferenceManager:
         """Generate using the base model only, bypassing any active LoRA adapter.
 
         Used during training example generation so that LoRA-baked knowledge
-        does not influence how new training pairs are phrased.
+        does not influence how new training pairs are phrased, and by the
+        evaluator as the judge and the sanity-check baseline.
+
+        PeftModel.from_pretrained() injects LoRA layers into self._base_model
+        in place, so calling it directly would still apply the active adapter.
+        disable_adapter() turns the LoRA layers off for the duration of the call
+        and restores their previous state on exit (layers already disabled by
+        unload_adapter() stay disabled).
         """
         if self._base_model is None:
             raise RuntimeError("Call load_base() before generate_base().")
-        return self._run_generate(self._base_model, messages, max_new_tokens)
+        if self._model is None:
+            return self._run_generate(self._base_model, messages, max_new_tokens)
+        with self._model.disable_adapter():
+            return self._run_generate(self._base_model, messages, max_new_tokens)
 
     def offload(self) -> None:
         """Release model weights from device memory before a training run.
