@@ -33,7 +33,7 @@ WORKDIR /app
 RUN python -m venv /venv
 ENV PATH="/venv/bin:$PATH"
 
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
 COPY groundcortex/ ./groundcortex/
 
 # When TORCH_INDEX is set, override the PyTorch source with the CUDA index.
@@ -84,4 +84,6 @@ EXPOSE 4343 4344
 #   /app/data/groundcortex.db - SQLite database
 VOLUME ["/app/data"]
 
-CMD ["groundcortex"]
+# --foreground keeps the server as the container's main process. Plain
+# `groundcortex` daemonizes and exits, which would stop the container.
+CMD ["groundcortex", "--foreground"]
